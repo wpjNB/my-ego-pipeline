@@ -161,3 +161,20 @@ def validate_config(config: Config) -> None:
     chunk = config.get("evaluation.chunk_seconds")
     if not isinstance(chunk, (int, float)) or float(chunk) <= 0.0:
         raise ConfigError(f"'evaluation.chunk_seconds' must be positive, got {chunk!r}")
+
+    from .runtime.subprocess_backend import VALID_MODES, BackendInvocation
+
+    mode = config.get("backends.mode", "real")
+    if mode not in VALID_MODES:
+        raise ConfigError(f"'backends.mode' must be one of {VALID_MODES}, got {mode!r}")
+    if mode == "real":
+        invocation = BackendInvocation.from_config(config)
+        for name in ("wilor", "hawor", "vggt"):
+            if not invocation.python_commands.get(name):
+                raise ConfigError(
+                    f"'backends.python.{name}' must be set for backends.mode=real "
+                    f'(e.g. ["conda", "run", "-n", "ego3d_{name}", "python"])'
+                )
+    timeout = config.get("backends.timeout_seconds")
+    if not isinstance(timeout, (int, float)) or float(timeout) <= 0:
+        raise ConfigError(f"'backends.timeout_seconds' must be positive, got {timeout!r}")

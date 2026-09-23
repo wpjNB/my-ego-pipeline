@@ -58,6 +58,11 @@ class ClipLayout:
         return self.root / "hand"
 
     @property
+    def hand_windows_dir(self) -> Path:
+        """Per-window HaWoR outputs (``hand/windows/000000_000015.npz``)."""
+        return self.hand_dir / "windows"
+
+    @property
     def camera_dir(self) -> Path:
         return self.root / "camera"
 
@@ -133,6 +138,7 @@ class ClipLayout:
             self.frames_dir,
             self.detection_dir,
             self.hand_dir,
+            self.hand_windows_dir,
             self.camera_windows_dir,
             self.stitched_dir,
             self.trajectory_dir,

@@ -1,7 +1,8 @@
-# Neutral defaults: every parameter that the blog post pins down is left at its
-# documented value, everything else is deliberately conservative.
+# End-to-end profile that swaps the three model backends for the deterministic
+# stand-in in backends/mock_backend.py. Same reference parameters, same artefact
+# contract, no GPU. Every stage records "backend_mode: mock" in its metadata.
 runtime:
-  device: auto
+  device: cpu              # the mock is numpy-only; keep it deterministic
   seed: 0
   log_level: INFO
 
@@ -13,12 +14,12 @@ paths:
   backends: backends
 
 backends:
-  mode: real               # real | mock  (mock = deterministic stand-in, never a model)
+  mode: mock
   python:
     wilor: ["conda", "run", "-n", "ego3d_wilor", "python"]
     hawor: ["conda", "run", "-n", "ego3d_hawor", "python"]
     vggt: ["conda", "run", "-n", "ego3d_vggt", "python"]
-  timeout_seconds: 7200
+  timeout_seconds: 600
   seed: 0
 
 preprocess:
@@ -26,14 +27,14 @@ preprocess:
   jpeg_quality: 2
 
 detection:
-  min_confidence: 0.75     # high-confidence anchor threshold
-  max_gap: 4               # same-side gap that may be recovered
-  iou_threshold: 0.20      # required IoU against the interpolated anchor box
+  min_confidence: 0.75
+  max_gap: 4
+  iou_threshold: 0.20
 
 hand:
   window: 16
   overlap: 8
-  batch_size: 4            # backend batch size; lower it if VRAM is tight
+  batch_size: 4
 
 camera:
   resolution: 416
@@ -43,11 +44,11 @@ camera:
   use_depth_confidence: true
 
 stitch:
-  pixel_stride: 8          # depth subsampling for correspondences
+  pixel_stride: 8
   min_depth: 0.001
   max_depth: null
   depth_confidence_floor: null
-  inlier_threshold: null   # null -> derived from the residual distribution
+  inlier_threshold: null
   ransac_iterations: 128
   blend: true
   normalize_world: true
@@ -60,12 +61,12 @@ refinement:
   wrist_depth_max_change: null
 
 evaluation:
-  dataset: hot3d
+  dataset: mock
   chunk_seconds: 1.0
   strict_artefacts: true
 
 visualization:
   enabled: true
-  fps: null                # null -> source fps
+  fps: null
   draw_bbox: true
   draw_confidence: true

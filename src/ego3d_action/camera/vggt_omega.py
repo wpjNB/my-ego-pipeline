@@ -9,15 +9,17 @@ that number as a target.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
-from ..errors import BackendInvocationNotImplemented, StageIOError
+from ..errors import StageIOError
 from ..runtime.backend import BackendSpec, BackendStatus, probe_backend, require_backend
-from .window import CameraWindow, WindowRange
+from ..runtime.subprocess_backend import BackendInvocation, run_runner
+from .window import CameraWindow, WindowRange, load_camera_window
 
 logger = logging.getLogger(__name__)
 
@@ -79,23 +81,70 @@ def require(third_party: str | Path, weights_root: str | Path) -> BackendStatus:
 def run_window(
     request: VggtWindowRequest,
     *,
+    invocation: BackendInvocation,
     third_party: str | Path,
     weights_root: str | Path,
-) -> CameraWindow:
-    """Run one VGGT-Omega window and return metric poses + depth.
+    out_dir: str | Path,
+    num_frames: int,
+    window: int = 200,
+    overlap: int = 40,
+    log_path: Path | None = None,
+) -> list[Path]:
+    """Run the VGGT-Omega backend and return the window files it wrote.
+
+    Model loading dominates the runtime, so the backend is invoked **once** for
+    the whole clip and writes every window into ``out_dir``; the schedule is
+    re-derived and every written file is validated before it is trusted.
+
+    In mock mode this executes ``backends/mock_backend.py vggt``.
 
     Raises:
-        BackendNotAvailableError: the backend env/weights are missing, or the
-            invocation has not been wired to the GPU server yet.
+        BackendNotAvailableError: the backend env/weights are missing.
+        BackendExecutionError: the runner failed or timed out.
+        StageIOError: a written window is missing or malformed.
     """
-    status = require(third_party, weights_root)
-    raise BackendInvocationNotImplemented(
-        "VGGT-Omega",
-        f"window inference runs in the '{VGGT_SPEC.env}' environment on the GPU server; "
-        f"requested frames [{request.start}, {request.end}) at {request.resolution} px with "
-        f"checkpoint {request.checkpoint} "
-        f"(checkout={status.checkout}, weights={status.weights}).",
-    )
+    if not invocation.is_mock:
+        require(third_party, weights_root)
+
+    spec, prefix = invocation.resolve("vggt", mock_subcommand="vggt")
+    args = [
+        *prefix,
+        "--out-dir",
+        str(out_dir),
+        "--num-frames",
+        str(num_frames),
+        "--window",
+        str(window),
+        "--overlap",
+        str(overlap),
+        "--resolution",
+        str(request.resolution),
+        "--checkpoint",
+        request.checkpoint,
+        "--device",
+        request.device,
+        "--third-party",
+        str(third_party),
+        "--weights",
+        str(weights_root),
+    ]
+    payload = run_runner(spec, args, log_path=log_path)
+    logger.info("VGGT-Omega runner reported %s", json.dumps(payload, sort_keys=True))
+
+    from .window import make_windows
+
+    target = Path(out_dir)
+    paths: list[Path] = []
+    for rng in make_windows(num_frames, window=window, overlap=overlap):
+        path = target / f"{rng.start:06d}_{rng.end - 1:06d}.npz"
+        if not path.is_file():
+            raise StageIOError(
+                f"the camera backend did not produce window {path.name}; it reported "
+                f"{payload.get('windows', 'no window list')}"
+            )
+        load_camera_window(path)  # validates shapes before the file is trusted
+        paths.append(path)
+    return paths
 
 
 def empty_window(start: int, end: int, *, height: int, width: int, intrinsics: np.ndarray) -> CameraWindow:

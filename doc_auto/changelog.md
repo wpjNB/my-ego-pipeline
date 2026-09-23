@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-09-23 17:22 (+08:00) - runnable end to end on CPU (runner protocol + mock backend)
+
+* `runtime/subprocess_backend.py`: the runner protocol
+  (`BackendInvocation`, `RunnerSpec`, `run_runner`) with typed
+  `BackendExecutionError` for non-zero exits, timeouts, launch failures and
+  malformed output; JSON summaries are parsed from the last stdout line.
+* `backends/`: `mock_backend.py` (deterministic stand-in, four subcommands:
+  `wilor`, `hawor`, `vggt`, `truth`) and the three real runners
+  (`wilor_runner.py`, `hawor_runner.py`, `vggt_runner.py`) with full argument
+  handling, artefact writing and a GPU-free `--check` mode. Only `run_model()`
+  remains to be written against the backend APIs.
+* Adapters now actually invoke their backend: `wilor.detect_clip`,
+  `hawor.run_windows` (one process for the whole clip, model loaded once),
+  `vggt_omega.run_window` (same), each validating the artefacts it receives.
+* `configs/mock.yaml` + `backends.mode` config plumbing; `validate_config`
+  rejects an unknown mode and a real run without interpreters.
+* `testing/synthetic.py`: deterministic scene, camera, hands, detections and
+  windows shared by the mock backend and the test-suite.
+* `scripts/demo_mock_pipeline.sh` + `make demo`: Phases 0-7 in ~10 s on CPU.
+  Latest run: 300 frames, pipeline wall time 5.65 s -> 53.10 FPS,
+  Action-MPJPE 24.64 mm (raw) / 25.90 mm (refined), coverage 90.67 %,
+  wrist error 22.92 -> 16.06 mm. See `doc_auto/ablation.md`.
+* Two gauge bugs found and fixed while building this: the mock reference
+  trajectory was expressed in the raw world frame instead of `World-0`, and the
+  camera translation filter moved frame 0 away from the origin; both are now
+  documented in `doc_auto/architecture.md`.
+* Test suite: **193 passed** (~13 s), including a full end-to-end mock run.
+
 ## 2026-09-23 17:12 (+08:00) - project bootstrap
 
 * Created the `ego3d_base` conda environment (Python 3.11, numpy/scipy/opencv/

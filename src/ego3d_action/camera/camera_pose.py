@@ -76,6 +76,39 @@ def normalize_to_first_camera(
     return new_rot, new_tr
 
 
+def world_frame_alignment(
+    rotation_c2w: Array,
+    translation_c2w: Array,
+    valid: Array | None = None,
+) -> tuple[Array, Array]:
+    """The ``(R_g, t_g)`` that re-anchors a world frame onto the first valid camera.
+
+    Applying ``p' = R_g (p - t_g)``, ``R' = R_g R`` and ``t' = R_g (t - t_g)``
+    to *everything* (camera poses and world points alike) is a pure gauge
+    change: it leaves every camera-relative quantity - and therefore
+    Action-MPJPE - unchanged, while restoring the documented "``World-0`` is the
+    first frame's camera" invariant after the camera translation filter has
+    moved frame 0.
+
+    Raises:
+        InsufficientDataError: when no frame is valid.
+    """
+    rot = np.asarray(rotation_c2w, dtype=np.float64)
+    tr = np.asarray(translation_c2w, dtype=np.float64)
+    mask = (
+        np.ones(rot.shape[0], dtype=bool)
+        if valid is None
+        else np.asarray(valid, dtype=bool).reshape(-1)
+    )
+    if mask.shape[0] != rot.shape[0]:
+        raise StageIOError(f"valid mask length {mask.shape[0]} != {rot.shape[0]}")
+    indices = np.flatnonzero(mask)
+    if indices.size == 0:
+        raise InsufficientDataError("cannot anchor a trajectory with no valid frame")
+    anchor = int(indices[0])
+    return rot[anchor].T, tr[anchor]
+
+
 def camera_to_world(points_camera: Array, rotation_c2w: Array, translation_c2w: Array) -> Array:
     """Batch ``p_w = R @ p_c + t`` for ``[T, 3, 3]`` / ``[T, 3]``."""
     return apply_rigid(rotation_c2w, translation_c2w, np.asarray(points_camera, dtype=np.float64))

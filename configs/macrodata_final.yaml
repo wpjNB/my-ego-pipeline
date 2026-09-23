@@ -10,6 +10,16 @@ paths:
   third_party: third_party
   weights: weights
   outputs: outputs
+  backends: backends
+
+backends:
+  mode: real               # real | mock  (mock = deterministic stand-in, never a model)
+  python:
+    wilor: ["conda", "run", "-n", "ego3d_wilor", "python"]
+    hawor: ["conda", "run", "-n", "ego3d_hawor", "python"]
+    vggt: ["conda", "run", "-n", "ego3d_vggt", "python"]
+  timeout_seconds: 7200
+  seed: 0
 
 preprocess:
   image_format: jpg

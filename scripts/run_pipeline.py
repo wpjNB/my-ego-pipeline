@@ -20,6 +20,7 @@ from ego3d_action.cli import base_parser, build_context, fail  # noqa: E402
 from ego3d_action.detection.wilor import probe as probe_wilor  # noqa: E402
 from ego3d_action.errors import Ego3DActionError  # noqa: E402
 from ego3d_action.hand.hawor import probe as probe_hawor  # noqa: E402
+from ego3d_action.runtime.subprocess_backend import BackendInvocation  # noqa: E402
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 
@@ -60,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
             return fail("--clip is required")
 
         print(f"environment: {context.environment.format()}")
+        invocation = BackendInvocation.from_config(context.config)
+        print(f"backend mode: {invocation.mode}")
         third_party = context.path("paths.third_party")
         weights = context.path("paths.weights")
         statuses = {
@@ -78,7 +81,11 @@ def main(argv: list[str] | None = None) -> int:
                     continue
             if args.dry_run:
                 blocker = ""
-                if stage.requires_backend and not statuses[stage.requires_backend].available:
+                if (
+                    not invocation.is_mock
+                    and stage.requires_backend
+                    and not statuses[stage.requires_backend].available
+                ):
                     blocker = f"  (blocked: {stage.requires_backend} is not installed)"
                 print(f"would run {stage.name}: scripts/{stage.script}{blocker}")
                 continue

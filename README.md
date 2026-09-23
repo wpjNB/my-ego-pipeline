@@ -55,6 +55,7 @@ Egocentric RGB
 make env              # or: conda env create -f environment-base.yml
 make install          # editable install into ego3d_base
 make test             # unit + integration tests, no GPU required
+make demo             # full Phases 0-7 on a synthetic clip, ~10 s, no GPU
 
 # Phase 0 on any video you have:
 conda run -n ego3d_base python scripts/run_preprocess.py \
@@ -63,6 +64,36 @@ conda run -n ego3d_base python scripts/run_preprocess.py \
 
 The orchestrator environment has no torch dependency: everything in Phases
 0, 1-tracking, 4, 5, 6 and 7 is pure numpy/scipy and runs on CPU.
+
+## Backends, and the mock mode
+
+Model backends are never imported by the orchestrator. Each one is a standalone
+runner script that takes CLI arguments, writes its artefacts and prints one JSON
+summary line as its last stdout line:
+
+```
+backends/wilor_runner.py   WiLoR detection      -> boxes/confidence/right_score/left_score/count
+backends/hawor_runner.py   HaWoR 16/8 windows   -> hand/windows/*.npz (camera-space joints)
+backends/vggt_runner.py    VGGT-Omega windows   -> camera/windows/*.npz (poses + metric depth)
+```
+
+`backends.python.<name>` says which interpreter runs each one - normally
+`conda run -n ego3d_<name> python`, i.e. the backend's own pinned CUDA stack.
+Every runner also supports `--check`, which reports availability as JSON without
+needing a GPU, and any non-zero exit, timeout or malformed output surfaces as a
+typed `BackendExecutionError` carrying the output tail.
+
+`backends.mode: mock` swaps the three runners for
+[`backends/mock_backend.py`](backends/mock_backend.py), a deterministic stand-in
+built from `ego3d_action.testing.synthetic`. It is *not* a model: it exists so
+the whole orchestration, the artefact contract, the stitcher and the evaluation
+can be run and tested on a laptop. Every artefact it produces is marked
+`backend_mode: mock` in its metadata.
+
+What still has to be written on the GPU server is one function per real runner -
+`run_model()` - which calls the backend's own inference API. They raise
+`NotImplementedError` with the exact checkout/weights/device instead of
+pretending to have run.
 
 ## GPU server
 
@@ -173,14 +204,24 @@ checkout.
 
 ## Current status
 
-Implemented and tested now: Phases 0, 4, 5, 6 and 7, the model-free half of
-Phase 1, the on-disk contract, config validation, device selection and the
-backend availability probes.
+Implemented and tested now: every phase, the on-disk contract, config
+validation, device selection, the backend availability probes, the runner
+protocol and the mock backend. `make demo` runs Phases 0-7 end to end on CPU
+(300 frames in ~6 s of pipeline time) and `make test` covers it with 193 tests.
 
-Blocked on the GPU server (explicitly, never silently stubbed): the WiLoR,
-HaWoR and VGGT-Omega *invocations*. Those adapters raise
-`BackendInvocationNotImplemented` with the exact environment, checkpoint and
-missing-path hints instead of pretending to run a model.
+What remains is one function per real backend: `run_model()` in
+`backends/{wilor,hawor,vggt}_runner.py`, calling the installed model's inference
+API. Everything around it - loading frames, owning the window schedule, writing
+and validating the artefacts, reporting JSON and failures - is already there and
+exercised by the mock, so the GPU-server step is a small, well-bounded edit that
+cannot quietly produce an empty artefact.
+
+```text
+make demo  ->
+  phases 0-6            : 300 frames, 5.65 s wall time (53.10 FPS on CPU)
+  Action MPJPE (raw)    : 24.6393 mm   coverage 90.67 %
+  Action MPJPE (refined): 25.8964 mm   wrist error 22.92 -> 16.06 mm
+```
 
 ## Design rules
 

@@ -14,15 +14,17 @@ orchestrator env.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import numpy as np
 
-from ..errors import BackendInvocationNotImplemented, StageIOError
+from ..errors import StageIOError
 from ..runtime.backend import BackendSpec, BackendStatus, probe_backend, require_backend
+from ..runtime.subprocess_backend import BackendInvocation, run_runner
 from .tracker import HandDetection, Track, conservative_track_both, tracks_to_detection_arrays
 
 logger = logging.getLogger(__name__)
@@ -86,6 +88,48 @@ def to_hand_detections(
     return converted
 
 
+def raw_detections_from_arrays(arrays: Mapping[str, np.ndarray]) -> list[list[RawDetection]]:
+    """Convert the runner's ``boxes/confidence/count`` arrays into detections."""
+    if "boxes" not in arrays or "confidence" not in arrays:
+        raise StageIOError("raw detections need at least 'boxes' and 'confidence'")
+    boxes = np.asarray(arrays["boxes"], dtype=np.float64)
+    confidence = np.asarray(arrays["confidence"], dtype=np.float64)
+    if boxes.ndim != 3 or boxes.shape[-1] != 4:
+        raise StageIOError(f"boxes must be [T, K, 4], got {boxes.shape}")
+    if confidence.shape != boxes.shape[:2]:
+        raise StageIOError(f"confidence must be {boxes.shape[:2]}, got {confidence.shape}")
+    right = arrays.get("right_score")
+    left = arrays.get("left_score")
+    count = arrays.get("count")
+    if count is None:
+        count = np.full(boxes.shape[0], boxes.shape[1], dtype=np.int64)
+    count = np.asarray(count, dtype=np.int64).reshape(-1)
+    if count.shape[0] != boxes.shape[0]:
+        raise StageIOError(f"count must have length {boxes.shape[0]}, got {count.shape}")
+
+    frames: list[list[RawDetection]] = []
+    for frame in range(boxes.shape[0]):
+        detections: list[RawDetection] = []
+        for slot in range(int(count[frame])):
+            detections.append(
+                RawDetection(
+                    bbox=boxes[frame, slot],
+                    confidence=float(confidence[frame, slot]),
+                    right_score=float(right[frame, slot]) if right is not None else 0.0,
+                    left_score=float(left[frame, slot]) if left is not None else 0.0,
+                )
+            )
+        frames.append(detections)
+    return frames
+
+
+def load_raw_detections(path: str | Path) -> list[list[RawDetection]]:
+    """Read detections exported by a WiLoR runner."""
+    from ..io.serialization import load_npz
+
+    return raw_detections_from_arrays(load_npz(path, required=("boxes", "confidence")))
+
+
 def track_clip(
     frame_detections: Sequence[Sequence[RawDetection]],
     *,
@@ -115,26 +159,66 @@ def track_clip(
 
 def detect_clip(
     frames_dir: str | Path,
+    out_path: str | Path,
     *,
+    invocation: BackendInvocation,
     third_party: str | Path,
     weights_root: str | Path,
     device: str = "auto",
     batch_size: int = 4,
-) -> list[list[RawDetection]]:
+    width: int | None = None,
+    height: int | None = None,
+    image_format: str = "jpg",
+    num_frames: int | None = None,
+    log_path: Path | None = None,
+) -> dict[str, np.ndarray]:
     """Run the WiLoR detector over a decoded frame folder.
 
+    In mock mode this executes ``backends/mock_backend.py``; in real mode it
+    requires the checkout/weights and runs ``backends/wilor_runner.py`` inside
+    the configured interpreter (normally ``ego3d_wilor``).
+
+    Returns:
+        The detection arrays written to ``out_path``.
+
     Raises:
-        BackendNotAvailableError: when the checkout/weights are missing.
-        StageIOError: when ``frames_dir`` holds no frames.
+        BackendNotAvailableError: checkout/weights missing in real mode.
+        StageIOError: no frames to process.
+        BackendExecutionError: the runner failed or timed out.
     """
-    status = require(third_party, weights_root)
-    frames = sorted(Path(frames_dir).glob("*.jpg"))
-    if not frames:
+    if not invocation.is_mock:
+        require(third_party, weights_root)
+    frames = sorted(Path(frames_dir).glob(f"*.{image_format}"))
+    if not frames and num_frames is None:
         raise StageIOError(f"no frames found in {frames_dir}")
-    raise BackendInvocationNotImplemented(
-        "WiLoR",
-        f"detector invocation is wired to the '{WILOR_SPEC.env}' environment and runs on the "
-        f"GPU server; {len(frames)} frames are ready at {frames_dir} "
-        f"(checkout={status.checkout}, weights={status.weights}). "
-        "This adapter intentionally does not fall back to a CPU re-implementation.",
-    )
+
+    spec, prefix = invocation.resolve("wilor", mock_subcommand="wilor")
+    args = [
+        *prefix,
+        "--frames",
+        str(frames_dir),
+        "--out",
+        str(out_path),
+        "--image-format",
+        image_format,
+        "--device",
+        device,
+        "--batch-size",
+        str(batch_size),
+        "--third-party",
+        str(third_party),
+        "--weights",
+        str(weights_root),
+    ]
+    if num_frames is not None:
+        args += ["--num-frames", str(num_frames)]
+    if width is not None:
+        args += ["--width", str(width)]
+    if height is not None:
+        args += ["--height", str(height)]
+
+    payload = run_runner(spec, args, log_path=log_path)
+    logger.info("WiLoR runner reported %s", json.dumps(payload, sort_keys=True))
+    from ..io.serialization import load_npz
+
+    return load_npz(out_path, required=("boxes", "confidence"))

@@ -10,6 +10,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from ego3d_action.camera.camera_pose import world_frame_alignment  # noqa: E402
 from ego3d_action.cli import base_parser, build_context, fail  # noqa: E402
 from ego3d_action.errors import Ego3DActionError, StageIOError  # noqa: E402
 from ego3d_action.fusion.trajectory import camera_joints_to_world, trajectory_metadata  # noqa: E402
@@ -23,6 +24,7 @@ from ego3d_action.refinement.wrist_depth import optimize_wrist_depth  # noqa: E4
 def main(argv: list[str] | None = None) -> int:
     parser = base_parser(__doc__ or "post-processing")
     parser.add_argument("--input", default=None, help="trajectory artefact (default: trajectory_raw.npz)")
+    parser.add_argument("--output", default=None, help="write here (default: trajectory.npz)")
     parser.add_argument("--no-camera-filter", action="store_true")
     parser.add_argument("--no-bone-scale", action="store_true")
     parser.add_argument("--no-wrist-depth", action="store_true")
@@ -92,6 +94,16 @@ def main(argv: list[str] | None = None) -> int:
             corrected_camera, rotation, refined_translation, hand_valid=valid
         )
 
+        # The 3-frame camera filter moves frame 0 slightly, so the invariant
+        # "World-0 is the first frame's camera" is restored with a gauge
+        # transform applied to the camera *and* the hands; no camera-relative
+        # quantity (and therefore no Action-MPJPE) changes.
+        if not args.no_camera_filter and bool(context.config.get("stitch.normalize_world", True)):
+            r_g, t_g = world_frame_alignment(rotation, refined_translation)
+            rotation = np.einsum("ij,tjk->tik", r_g, rotation)
+            refined_translation = np.einsum("ij,tj->ti", r_g, refined_translation - t_g)
+            world = np.einsum("ij,thnj->thni", r_g, world - t_g)
+
         if args.dry_run:
             print(f"would write the refined trajectory to {layout.trajectory_path}")
             return 0
@@ -104,26 +116,29 @@ def main(argv: list[str] | None = None) -> int:
                 "camera_t_c2w": refined_translation,
             }
         )
-        save_npz(layout.trajectory_path, **out)
-        np.save(layout.world_joints_refined_path, world)
-        save_json(
-            layout.trajectory_metadata_path,
-            trajectory_metadata(
-                fps=fps,
-                world_frame=0,
-                num_frames=int(joints_camera.shape[0]),
-                extra={
-                    "stage": "phase6_refinement",
-                    "clip": layout.clip,
-                    "camera_filter_applied": not args.no_camera_filter,
-                    "bone_scale_applied": not args.no_bone_scale,
-                    "wrist_depth_applied": not args.no_wrist_depth,
-                    **bone_report,
-                    **wrist_report,
-                },
-            ),
+        output_path = Path(args.output) if args.output else layout.trajectory_path
+        save_npz(output_path, **out)
+        if output_path == layout.trajectory_path:
+            np.save(layout.world_joints_refined_path, world)
+        metadata_payload = trajectory_metadata(
+            fps=fps,
+            world_frame=0,
+            num_frames=int(joints_camera.shape[0]),
+            extra={
+                "stage": "phase6_refinement",
+                "clip": layout.clip,
+                "variant": output_path.stem,
+                "camera_filter_applied": not args.no_camera_filter,
+                "bone_scale_applied": not args.no_bone_scale,
+                "wrist_depth_applied": not args.no_wrist_depth,
+                **bone_report,
+                **wrist_report,
+            },
         )
-        print(f"refined trajectory -> {layout.trajectory_path}")
+        if output_path == layout.trajectory_path:
+            save_json(layout.trajectory_metadata_path, metadata_payload)
+        save_json(output_path.with_suffix(".json"), metadata_payload)
+        print(f"refined trajectory -> {output_path}")
         return 0
     except Ego3DActionError as exc:
         return fail(str(exc))

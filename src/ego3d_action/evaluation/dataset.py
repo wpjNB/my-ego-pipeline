@@ -58,6 +58,9 @@ def load_trajectory(
     if fps is None:
         metadata_path = source.with_name("metadata.json")
         if not metadata_path.is_file():
+            # Ablation runs write <stem>.json next to the artefact.
+            metadata_path = source.with_suffix(".json")
+        if not metadata_path.is_file():
             raise StageIOError(
                 f"cannot determine fps: {metadata_path} does not exist; pass --fps explicitly"
             )

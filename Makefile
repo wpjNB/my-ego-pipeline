@@ -25,6 +25,9 @@ test-fast: ## run everything except the synthetic stitching scene
 smoke: ## preprocess a synthetic video end to end through Phase 0
 	bash scripts/smoke_test.sh
 
+demo: ## full Phases 0-7 run with the deterministic mock backend (no GPU)
+	bash scripts/demo_mock_pipeline.sh
+
 dry-run: ## print the pipeline plan without running the model backends
 	$(CONDA) run -n $(ENV) python scripts/run_pipeline.py \
 		--config $(CONFIG) --clip $(CLIP) --video data/raw/$(CLIP).mp4 --dry-run

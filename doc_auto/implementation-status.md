@@ -1,8 +1,8 @@
 # Implementation status
 
-Last modified: 2026-09-23 17:06 (+08:00)
+Last modified: 2026-09-23 17:22 (+08:00)
 
-Test suite: **166 passed in ~6 s** on the CPU-only laptop
+Test suite: **193 passed in ~13 s** on the CPU-only laptop
 (`conda run -n ego3d_base python -m pytest -q`).
 
 ## Complete and tested (CPU)
@@ -20,21 +20,30 @@ Test suite: **166 passed in ~6 s** on the CPU-only laptop
 | Camera filter / bone scale / wrist depth | `refinement/*` | `tests/test_camera_filter.py`, `tests/test_bone_scale.py`, `tests/test_wrist_depth.py` |
 | Action-MPJPE / coverage / report | `evaluation/*` | `tests/test_action_mpjpe.py` |
 | Phase 0 video IO | `io/video.py`, `io/frames.py` | `tests/test_frames_io.py` |
+| Synthetic scene / mock data | `testing/synthetic.py` | `tests/test_mock_pipeline.py` |
+| Runner protocol | `runtime/subprocess_backend.py` | `tests/test_runner_protocol.py` |
+| Full pipeline (mock backend) | `scripts/run_pipeline.py` + all stages | `tests/test_mock_pipeline.py` |
 
-## Interfaces in place, invocation blocked on the GPU server
+## Interfaces in place; only the model call is blocked on the GPU server
 
-| Backend | Adapter | Behaviour today |
+| Backend | Adapter + runner | Behaviour today |
 | --- | --- | --- |
-| WiLoR | `detection/wilor.py` | availability probe + tracker path fully working; the detector call raises `BackendInvocationNotImplemented` |
-| HaWoR | `hand/hawor.py` | availability probe + window request/response types; the reconstruction call raises `BackendInvocationNotImplemented` |
-| VGGT-Omega | `camera/vggt_omega.py` | availability probe + window request type + checkpoint allow-list; inference raises `BackendInvocationNotImplemented` |
+| WiLoR | `detection/wilor.py` + `backends/wilor_runner.py` | availability probe, frame discovery, argument handling, artefact format and `--check` are done; `run_model()` must call WiLoR's detector |
+| HaWoR | `hand/hawor.py` + `backends/hawor_runner.py` | window schedule, detection plumbing, artefact format and `--check` are done; `run_model()` must call HaWoR |
+| VGGT-Omega | `camera/vggt_omega.py` + `backends/vggt_runner.py` | window schedule, checkpoint allow-list, artefact format and `--check` are done; `run_model()` must call VGGT-Omega |
 
-This is deliberate: no CPU placeholder ever stands in for a real model, and the
-error message names the environment, the checkpoint and the missing paths.
+Each `run_model()` raises `NotImplementedError` naming the checkout, weights,
+checkpoint and device, so a half-configured server can never emit an empty
+artefact that looks like a successful run.
+
+Running the whole pipeline today works through `backends.mode: mock`
+(`configs/mock.yaml`), which substitutes a deterministic stand-in for the three
+models and marks every artefact with `backend_mode: mock`.
 
 ## Next steps, in order
 
-1. Wire the three subprocess wrappers (export detections / window poses + depth).
+1. Implement the three `run_model()` bodies against the backend APIs.
 2. Run Phases 1-3 on one GPU clip and check the debug videos.
-3. Fill the ablation table from `scripts/evaluate_hot3d.py` outputs.
+3. Fill the real-data ablation table (`doc_auto/ablation.md`) from
+   `scripts/evaluate_hot3d.py` outputs.
 4. Add the HOT3D episode loader once the sequence list is fixed.

@@ -47,3 +47,31 @@ class BackendInvocationNotImplemented(Ego3DActionError):
         self.backend = backend
         self.hint = hint
         super().__init__(f"backend '{backend}' invocation is not wired up: {hint}")
+
+
+class BackendExecutionError(Ego3DActionError):
+    """A backend runner process failed, timed out or broke the runner protocol.
+
+    Carries the runner name, its exit code and the tail of its output so a
+    failure on the GPU server is diagnosable from the orchestrator log alone.
+    """
+
+    def __init__(self, backend: str, message: str, *, exit_code: int | None = None) -> None:
+        self.backend = backend
+        self.exit_code = exit_code
+        suffix = f" (exit code {exit_code})" if exit_code is not None else ""
+        super().__init__(f"backend runner '{backend}' failed{suffix}: {message}")
+
+
+class BackendExecutionError(Ego3DActionError):
+    """A backend runner process failed, timed out or broke the runner protocol.
+
+    Carries the runner name, its exit code and the tail of its output so a
+    failure on the GPU server is diagnosable from the orchestrator log alone.
+    """
+
+    def __init__(self, backend: str, message: str, *, exit_code: int | None = None) -> None:
+        self.backend = backend
+        self.exit_code = exit_code
+        suffix = f" (exit code {exit_code})" if exit_code is not None else ""
+        super().__init__(f"backend runner '{backend}' failed{suffix}: {message}")

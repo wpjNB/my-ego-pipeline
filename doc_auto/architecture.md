@@ -1,6 +1,16 @@
 # Architecture
 
-Last modified: 2026-09-23 17:12 (+08:00)
+Last modified: 2026-09-23 17:22 (+08:00)
+
+## Backend invocation
+
+The orchestrator never imports a model. Each backend is a standalone runner
+script executed as a subprocess (`runtime/subprocess_backend.py`) with a small
+protocol: CLI arguments in, artefacts on disk, one JSON summary line on stdout,
+non-zero exit on failure. `backends.python.<name>` selects the interpreter (the
+backend's own conda env), `backends.mode` selects `real` (the runners in
+`backends/*_runner.py`) or `mock` (`backends/mock_backend.py`, a deterministic
+stand-in used for CPU-only runs and tests).
 
 ## Stage map
 
@@ -47,3 +57,19 @@ two stages can disagree about a path.
 * No pose interpolation for missing frames: `NaN` marks missing, everywhere.
 * No `DROID-SLAM` / `Metric3D` in the HaWoR environment.
 
+## World-0 gauge
+
+`World-0` is the first frame's camera, and two code paths keep that invariant
+honest:
+
+* Phase 4 re-anchors the stitched trajectory with
+  `camera_pose.normalize_to_first_camera`;
+* Phase 6 applies a gauge transform (`camera_pose.world_frame_alignment`) after
+  the camera translation filter, because the 3-frame binomial filter moves frame
+  0 slightly. The same transform is applied to the camera *and* the hands, so
+  every camera-relative quantity - and therefore Action-MPJPE - is unchanged.
+
+Forgetting that gauge is a classic way to produce a constant offset in the
+evaluation: the mock reference trajectory, for example, has to be expressed in
+`World-0` (`testing.synthetic.to_world0`) rather than in the raw synthetic world
+frame.
