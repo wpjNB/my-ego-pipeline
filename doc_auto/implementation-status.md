@@ -1,8 +1,8 @@
 # Implementation status
 
-Last modified: 2026-09-23 17:22 (+08:00)
+Last modified: 2026-09-23 17:36 (+08:00)
 
-Test suite: **193 passed in ~13 s** on the CPU-only laptop
+Test suite: **212 passed in ~12 s** on the CPU-only laptop
 (`conda run -n ego3d_base python -m pytest -q`).
 
 ## Complete and tested (CPU)
@@ -23,6 +23,10 @@ Test suite: **193 passed in ~13 s** on the CPU-only laptop
 | Synthetic scene / mock data | `testing/synthetic.py` | `tests/test_mock_pipeline.py` |
 | Runner protocol | `runtime/subprocess_backend.py` | `tests/test_runner_protocol.py` |
 | Full pipeline (mock backend) | `scripts/run_pipeline.py` + all stages | `tests/test_mock_pipeline.py` |
+| LeRobot v3 reader | `datasets/lerobot.py` | `tests/test_lerobot.py` |
+| HOT3D reference conversion | `datasets/hot3d_gt.py` | `tests/test_lerobot.py` |
+| Reference-vs-prediction viewer | `visualization/overlay.py` | `tests/test_visualization.py` |
+| Wrist-level evaluation | `evaluation/action_mpjpe.py` | `tests/test_hot3d_evaluation.py` |
 
 ## Interfaces in place; only the model call is blocked on the GPU server
 
@@ -46,4 +50,6 @@ models and marks every artefact with `backend_mode: mock`.
 2. Run Phases 1-3 on one GPU clip and check the debug videos.
 3. Fill the real-data ablation table (`doc_auto/ablation.md`) from
    `scripts/evaluate_hot3d.py` outputs.
-4. Add the HOT3D episode loader once the sequence list is fixed.
+4. If 21-joint references are wanted, obtain the MANO model and add forward
+   kinematics to `datasets/hot3d_gt.py` (the MANO parameters already travel
+   through the contract).

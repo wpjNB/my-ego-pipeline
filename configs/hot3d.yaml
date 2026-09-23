@@ -11,6 +11,7 @@ paths:
   weights: weights
   outputs: outputs
   hot3d_root: data/hot3d
+  lerobot_root: data/samples/lerobot_v3
   backends: backends
 
 backends:

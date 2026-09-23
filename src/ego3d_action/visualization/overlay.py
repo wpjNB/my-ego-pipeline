@@ -275,3 +275,134 @@ def render_overlays(
             write_hand_video(frame_paths, joints_camera, intrinsics, valid, out / "02_hawor.mp4")
         )
     return written
+
+
+def _project_wrist(
+    point_world: Array, rotation_c2w: Array, translation_c2w: Array, intrinsics: Array
+) -> tuple[int, int] | None:
+    """Project one world point with one camera; ``None`` when not drawable."""
+    point = np.asarray(point_world, dtype=np.float64)
+    if not np.isfinite(point).all():
+        return None
+    camera = np.asarray(rotation_c2w, dtype=np.float64).T @ (point - np.asarray(translation_c2w))
+    if camera[2] <= 1e-6:
+        return None
+    pixel = np.asarray(intrinsics, dtype=np.float64) @ camera
+    return int(round(pixel[0] / pixel[2])), int(round(pixel[1] / pixel[2]))
+
+
+def write_wrist_comparison_video(
+    frame_paths: Sequence[Path],
+    ground_truth_world: Array,
+    rotation_c2w: Array,
+    translation_c2w: Array,
+    intrinsics: Array,
+    valid: Array,
+    out_path: str | Path,
+    *,
+    prediction_world: Array | None = None,
+    fps: float = 30.0,
+    still_indices: Sequence[int] = (),
+    still_dir: str | Path | None = None,
+) -> Path:
+    """Overlay the reference wrist (and optionally a prediction) on the RGB.
+
+    Both trajectories are projected with the *reference* camera, so this is a
+    direct visual check that the ground truth - and the frame conventions the
+    whole pipeline uses - line up with the pixels.
+    """
+    cv2 = require_cv2()
+    frames = list(frame_paths)
+    if not frames:
+        raise StageIOError("no frames to render")
+    truth = np.asarray(ground_truth_world, dtype=np.float64)
+    if truth.shape[0] < len(frames):
+        raise StageIOError(f"ground truth covers {truth.shape[0]} frames but {len(frames)} were given")
+    prediction = None if prediction_world is None else np.asarray(prediction_world, dtype=np.float64)
+
+    target = Path(out_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    sample = cv2.imread(str(frames[0]), cv2.IMREAD_COLOR)
+    if sample is None:
+        raise StageIOError(f"cannot decode {frames[0]}")
+    height, width = sample.shape[:2]
+    writer = _video_writer(cv2, target, float(fps), (width, height))
+    stills = set(int(i) for i in still_indices)
+    still_root = Path(still_dir) if still_dir is not None else None
+    if stills and still_root is None:
+        still_root = target.parent / f"{target.stem}_stills"
+    if still_root is not None:
+        still_root.mkdir(parents=True, exist_ok=True)
+
+    try:
+        for index, path in enumerate(frames):
+            frame = cv2.imread(str(path), cv2.IMREAD_COLOR)
+            if frame is None:
+                raise StageIOError(f"cannot decode {path}")
+            canvas = frame.copy()
+            for hand, colour, label in ((0, LEFT_COLOUR, "L"), (1, RIGHT_COLOUR, "R")):
+                if not bool(valid[index, hand]):
+                    continue
+                gt_pixel = _project_wrist(
+                    truth[index, hand, 0, :], rotation_c2w[index], translation_c2w[index], intrinsics[index]
+                )
+                pred_pixel = (
+                    _project_wrist(
+                        prediction[index, hand, 0, :],
+                        rotation_c2w[index],
+                        translation_c2w[index],
+                        intrinsics[index],
+                    )
+                    if prediction is not None
+                    else None
+                )
+                if gt_pixel is not None:
+                    cv2.circle(canvas, gt_pixel, 6, colour, 2, cv2.LINE_AA)
+                    cv2.drawMarker(canvas, gt_pixel, colour, cv2.MARKER_CROSS, 14, 2)
+                    cv2.putText(
+                        canvas,
+                        f"GT {label}",
+                        (gt_pixel[0] + 8, gt_pixel[1] - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.45,
+                        colour,
+                        1,
+                        cv2.LINE_AA,
+                    )
+                if pred_pixel is not None:
+                    cv2.circle(canvas, pred_pixel, 6, (0, 215, 255), 2, cv2.LINE_AA)
+                if gt_pixel is not None and pred_pixel is not None:
+                    error_mm = 1000.0 * float(
+                        np.linalg.norm(truth[index, hand, 0, :] - prediction[index, hand, 0, :])
+                    )
+                    cv2.line(canvas, gt_pixel, pred_pixel, (255, 255, 255), 1, cv2.LINE_AA)
+                    midpoint = ((gt_pixel[0] + pred_pixel[0]) // 2, (gt_pixel[1] + pred_pixel[1]) // 2)
+                    cv2.putText(
+                        canvas,
+                        f"{error_mm:.0f} mm",
+                        midpoint,
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.4,
+                        (255, 255, 255),
+                        1,
+                        cv2.LINE_AA,
+                    )
+            cv2.putText(
+                canvas,
+                f"frame {index}"
+                + ("   orange = prediction" if prediction is not None else "")
+                + "   coloured = ground truth",
+                (8, 18),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
+            writer.write(canvas)
+            if index in stills and still_root is not None:
+                cv2.imwrite(str(still_root / f"{index:06d}.png"), canvas)
+    finally:
+        writer.release()
+    logger.info("wrote %s (%d frames)", target, len(frames))
+    return target

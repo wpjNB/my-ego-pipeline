@@ -50,3 +50,22 @@ promise for this implementation.
 | + bone scale | | | |
 | + wrist depth | | | |
 | **Final** | | | |
+
+## Real-data plumbing check (not an accuracy result)
+
+`WITH_MOCK=1 bash scripts/demo_hot3d_sample.sh` runs Phases 1-6 on the real
+`hot3d_ep000` footage (450 frames, 512x512, 30 fps) with the mock backend and
+evaluates against the real HOT3D reference:
+
+| Quantity | Value |
+| --- | --- |
+| camera windows / Sim(3) alignments | 3 windows, 2 alignments, 100 % inliers, 0.0000 m rmse |
+| stitched camera coverage | 100 % |
+| Action-MPJPE (wrist-level) | 1109.19 mm |
+| coverage | 96.78 % |
+| referenced joints | 4.61 % |
+
+The 1.1 m error is expected and meaningless: the mock backend substitutes
+synthetic hands and a synthetic camera trajectory, so this run only proves that
+every stage, the artefact contract and the evaluation survive real-resolution,
+real-length, real-motion input.

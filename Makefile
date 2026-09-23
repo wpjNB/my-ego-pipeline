@@ -28,6 +28,9 @@ smoke: ## preprocess a synthetic video end to end through Phase 0
 demo: ## full Phases 0-7 run with the deterministic mock backend (no GPU)
 	bash scripts/demo_mock_pipeline.sh
 
+sample: ## import the bundled HOT3D sample episode and render the GT viewer
+	bash scripts/demo_hot3d_sample.sh
+
 dry-run: ## print the pipeline plan without running the model backends
 	$(CONDA) run -n $(ENV) python scripts/run_pipeline.py \
 		--config $(CONFIG) --clip $(CLIP) --video data/raw/$(CLIP).mp4 --dry-run

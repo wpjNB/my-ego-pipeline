@@ -56,6 +56,7 @@ make env              # or: conda env create -f environment-base.yml
 make install          # editable install into ego3d_base
 make test             # unit + integration tests, no GPU required
 make demo             # full Phases 0-7 on a synthetic clip, ~10 s, no GPU
+make sample           # import the bundled HOT3D sample and render its viewer
 
 # Phase 0 on any video you have:
 conda run -n ego3d_base python scripts/run_preprocess.py \
@@ -64,6 +65,50 @@ conda run -n ego3d_base python scripts/run_preprocess.py \
 
 The orchestrator environment has no torch dependency: everything in Phases
 0, 1-tracking, 4, 5, 6 and 7 is pure numpy/scipy and runs on CPU.
+
+## The bundled HOT3D sample
+
+`data/samples/lerobot_v3` is a LeRobot v3 dataset with eight 15-second HOT3D
+egocentric clips carrying per-frame ground truth (camera extrinsics +
+intrinsics, wrist pose, 15 joint rotations, MANO shape, validity).
+
+```bash
+make sample                                   # episode 0: import + viewer
+EPISODE=3 make sample
+WITH_MOCK=1 bash scripts/demo_hot3d_sample.sh  # also run Phases 1-6 on real footage
+
+# or step by step
+conda run -n ego3d_base python scripts/import_lerobot.py \
+    --config configs/hot3d.yaml --clip hot3d_ep000 --data-root data/hot3d \
+    --root data/samples/lerobot_v3 --episode 0
+conda run -n ego3d_base python scripts/render_gt_vs_pred.py \
+    --config configs/hot3d.yaml --clip hot3d_ep000 --data-root data/hot3d \
+    --prediction data/hot3d/hot3d_ep000/trajectory/trajectory.npz \
+    --ground-truth data/hot3d/hot3d_ep000/trajectory/ground_truth.npz
+```
+
+The importer decodes the episode video, writes `frames/` + `metadata.json`, and
+converts the labels into `trajectory/ground_truth.npz` in **the same contract the
+pipeline emits** - camera poses, intrinsics, wrist position, MANO parameters and
+validity - re-anchored to `World-0` so a prediction is directly comparable. The
+HOT3D world frame stays recoverable through `hot3d_world_anchor_*` in the
+metadata.
+
+The viewer projects the reference wrist (and a prediction, if given) on the RGB
+with the reference camera:
+
+![ground truth on the sample](/home/wpj/ego/my-ego-pipeline/data/hot3d/hot3d_ep000/visualization/gt_vs_pred_stills/000150.png)
+
+One honest limitation: the sample stores a wrist pose plus 15 joint rotations,
+not 21 joint positions. Turning those into fingertips needs the MANO mesh model
+(`v_template`/`shapedirs`/`J_regressor`/`weights`), which is not bundled and is
+licence-gated - so joints 1..20 are written as `NaN` and the metadata records
+`hand_joints: "wrist_only"`. The evaluation masks per joint and reports
+`referenced joints: 4.7 %`, so you get a wrist-level Action-MPJPE plus an
+explicit note instead of a silently fabricated average.
+
+`data/*` is git-ignored: the sample dataset and everything derived from it stay
+on disk and out of the repository.
 
 ## Backends, and the mock mode
 

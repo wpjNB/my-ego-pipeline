@@ -43,6 +43,7 @@ class ActionMPJPEResult:
     per_joint_mm: Array  # [21]
     chunk_indices: Array
     per_chunk_mm: Array
+    joint_coverage: float  # fraction of (frame, hand, joint) terms that were comparable
 
     def as_dict(self) -> dict[str, float]:
         return {
@@ -58,6 +59,20 @@ def to_camera_frame(points_world: Array, rotation_c2w: Array, translation_c2w: A
     """Express world points in the camera frame given by ``(R_c2w, t_c2w)``."""
     rel = np.asarray(points_world, dtype=np.float64) - np.asarray(translation_c2w, dtype=np.float64)
     return np.einsum("ij,...j->...i", np.asarray(rotation_c2w, dtype=np.float64).T, rel)
+
+
+def safe_nanmean(values: Array, axis: int) -> Array:
+    """``np.nanmean`` that returns ``NaN`` (quietly) for all-NaN slices.
+
+    A reference trajectory may legitimately contain joints that are never
+    observed (see the wrist-only HOT3D sample), and ``np.nanmean`` would emit a
+    "Mean of empty slice" warning for every one of them.
+    """
+    data = np.asarray(values, dtype=np.float64)
+    finite = np.isfinite(data)
+    count = np.sum(finite, axis=axis)
+    total = np.sum(np.where(finite, data, 0.0), axis=axis)
+    return np.where(count > 0, total / np.where(count > 0, count, 1), np.nan)
 
 
 def action_mpjpe(
@@ -119,14 +134,23 @@ def action_mpjpe(
     if chunk > total:
         raise StageIOError(f"chunk length {chunk} exceeds the clip length {total}")
 
-    finite_pred = np.isfinite(pred).all(axis=(2, 3))
-    finite_gt = np.isfinite(gt).all(axis=(2, 3))
-    pred_mask = finite_pred if prediction_valid is None else np.asarray(prediction_valid, dtype=bool) & finite_pred
-    gt_mask = finite_gt if ground_truth_valid is None else np.asarray(ground_truth_valid, dtype=bool) & finite_gt
-    for name, mask in (("prediction_valid", pred_mask), ("ground_truth_valid", gt_mask)):
-        if mask.shape != (total, NUM_HANDS):
-            raise StageIOError(f"{name} must be [{total}, 2], got {mask.shape}")
-    usable = pred_mask & gt_mask
+    # Finiteness is evaluated per *joint*, not per hand-frame: a reference that
+    # only carries the wrist (the bundled HOT3D sample, which has no MANO mesh
+    # model to derive finger positions) must still produce a meaningful number
+    # instead of being discarded wholesale.
+    finite_pred = np.isfinite(pred).all(axis=-1)  # [T, 2, 21] - per joint, not per coordinate
+    finite_gt = np.isfinite(gt).all(axis=-1)
+    if prediction_valid is not None:
+        hand_mask = np.asarray(prediction_valid, dtype=bool)
+        if hand_mask.shape != (total, NUM_HANDS):
+            raise StageIOError(f"prediction_valid must be [{total}, 2], got {hand_mask.shape}")
+        finite_pred = finite_pred & hand_mask[:, :, None]
+    if ground_truth_valid is not None:
+        hand_mask = np.asarray(ground_truth_valid, dtype=bool)
+        if hand_mask.shape != (total, NUM_HANDS):
+            raise StageIOError(f"ground_truth_valid must be [{total}, 2], got {hand_mask.shape}")
+        finite_gt = finite_gt & hand_mask[:, :, None]
+    usable = finite_pred & finite_gt  # [T, 2, 21]
 
     starts = np.arange(0, total - chunk + 1, dtype=np.int64)
     per_frame_error = np.full(
@@ -139,7 +163,7 @@ def action_mpjpe(
         gt_cam = to_camera_frame(gt[frames], gr[start], gtt[start])
         diff = np.linalg.norm(pred_cam - gt_cam, axis=-1)
         mask = usable[frames]
-        per_frame_error[slot] = np.where(mask[:, :, None], diff, np.nan)
+        per_frame_error[slot] = np.where(mask, diff, np.nan)
 
     if not np.isfinite(per_frame_error).any():
         raise StageIOError(
@@ -147,20 +171,23 @@ def action_mpjpe(
         )
 
     per_hand = np.array(
-        [np.nanmean(per_frame_error[..., hand, :]) for hand in range(NUM_HANDS)], dtype=np.float64
+        [safe_nanmean(per_frame_error[..., hand, :], axis=None) for hand in range(NUM_HANDS)],
+        dtype=np.float64,
     )
     per_joint = np.array(
-        [np.nanmean(per_frame_error[..., joint]) for joint in range(NUM_JOINTS)], dtype=np.float64
+        [safe_nanmean(per_frame_error[..., joint], axis=None) for joint in range(NUM_JOINTS)],
+        dtype=np.float64,
     )
     per_chunk = np.array(
-        [np.nanmean(per_frame_error[slot]) for slot in range(starts.size)], dtype=np.float64
+        [safe_nanmean(per_frame_error[slot], axis=None) for slot in range(starts.size)],
+        dtype=np.float64,
     )
 
     depth_error = np.abs(pred[..., 2] - gt[..., 2])
     depth_mm = float(1000.0 * np.mean(depth_error[usable])) if usable.any() else float("nan")
 
     result = ActionMPJPEResult(
-        action_mpjpe_mm=float(1000.0 * np.nanmean(per_frame_error)),
+        action_mpjpe_mm=float(1000.0 * safe_nanmean(per_frame_error, axis=None)),
         num_chunks=int(starts.size),
         num_terms=int(np.count_nonzero(np.isfinite(per_frame_error))),
         per_hand_mm=1000.0 * per_hand,
@@ -169,6 +196,7 @@ def action_mpjpe(
         per_joint_mm=1000.0 * per_joint,
         chunk_indices=starts,
         per_chunk_mm=1000.0 * per_chunk,
+        joint_coverage=float(np.mean(usable)),
     )
     logger.info(
         "Action-MPJPE %.4f mm over %d chunks (%d terms); wrist %.3f mm",

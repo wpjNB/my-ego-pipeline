@@ -24,6 +24,7 @@ class EvalTrajectory:
     fps: float
     source: Path
     num_frames: int
+    metadata: dict[str, object]
 
     @property
     def coverage(self) -> float:
@@ -55,16 +56,19 @@ def load_trajectory(
         if name not in data:
             raise StageIOError(f"{source} is missing the field '{name}'")
 
+    metadata_path = source.with_name("metadata.json")
+    if not metadata_path.is_file():
+        # Reference/ablation runs write <stem>.json next to the artefact.
+        metadata_path = source.with_suffix(".json")
+    metadata: dict[str, object] = {}
+    if metadata_path.is_file():
+        metadata = load_json(metadata_path)
     if fps is None:
-        metadata_path = source.with_name("metadata.json")
-        if not metadata_path.is_file():
-            # Ablation runs write <stem>.json next to the artefact.
-            metadata_path = source.with_suffix(".json")
         if not metadata_path.is_file():
             raise StageIOError(
-                f"cannot determine fps: {metadata_path} does not exist; pass --fps explicitly"
+                f"cannot determine fps: neither {source.with_name('metadata.json')} nor "
+                f"{source.with_suffix('.json')} exists; pass --fps explicitly"
             )
-        metadata = load_json(metadata_path)
         if "fps" not in metadata:
             raise StageIOError(f"{metadata_path} has no 'fps' field; pass --fps explicitly")
         fps = float(metadata["fps"])
@@ -79,4 +83,5 @@ def load_trajectory(
         fps=float(fps),
         source=source,
         num_frames=int(joints.shape[0]),
+        metadata=metadata,
     )

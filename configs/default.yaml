@@ -11,6 +11,7 @@ paths:
   weights: weights
   outputs: outputs
   backends: backends
+  lerobot_root: data/samples/lerobot_v3
 
 backends:
   mode: real               # real | mock  (mock = deterministic stand-in, never a model)

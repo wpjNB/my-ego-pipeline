@@ -19,5 +19,7 @@ dependencies:
   - tqdm>=4.65
   - matplotlib>=3.7
   - opencv>=4.8
+  - pyarrow>=14      # LeRobot v3 / HOT3D sample parquet
+  - pandas>=2.1
   - pytest>=7.4
   - pip

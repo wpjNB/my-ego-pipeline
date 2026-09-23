@@ -145,3 +145,52 @@ def test_evaluate_cli_reports_missing_artefacts(tmp_path: Path) -> None:
     )
     assert result.returncode != 0
     assert "not found" in (result.stdout + result.stderr).lower()
+
+
+SAMPLE_ROOT = REPO_ROOT / "data" / "samples" / "lerobot_v3"
+
+
+@pytest.mark.skipif(not SAMPLE_ROOT.is_dir(), reason="bundled LeRobot sample missing")
+def test_import_lerobot_cli_writes_the_reference(tmp_path: Path) -> None:
+    result = run_script(
+        "scripts/import_lerobot.py",
+        "--config",
+        "configs/hot3d.yaml",
+        "--clip",
+        "sample_ep000",
+        "--data-root",
+        str(tmp_path),
+        "--root",
+        str(SAMPLE_ROOT),
+        "--episode",
+        "0",
+        "--no-frames",
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "coverage" in result.stdout
+
+    trajectory = tmp_path / "sample_ep000" / "trajectory" / "ground_truth.npz"
+    assert trajectory.is_file()
+    data = np.load(trajectory)
+    assert data["hand_xyz_world"].shape == (450, 2, 21, 3)
+    metadata = json.loads(
+        (tmp_path / "sample_ep000" / "trajectory" / "ground_truth.json").read_text(encoding="utf-8")
+    )
+    assert metadata["hand_joints"] == "wrist_only"
+    assert metadata["world_frame"] == 0
+
+
+@pytest.mark.skipif(not SAMPLE_ROOT.is_dir(), reason="bundled LeRobot sample missing")
+def test_render_gt_vs_pred_cli_needs_frames(tmp_path: Path) -> None:
+    result = run_script(
+        "scripts/render_gt_vs_pred.py",
+        "--config",
+        "configs/hot3d.yaml",
+        "--clip",
+        "missing_clip",
+        "--data-root",
+        str(tmp_path),
+        "--ground-truth",
+        str(tmp_path / "nope.npz"),
+    )
+    assert result.returncode != 0

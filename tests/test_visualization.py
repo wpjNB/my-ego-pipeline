@@ -115,3 +115,58 @@ def test_plot_world_trajectory_writes_a_figure(tmp_path: Path) -> None:
 
     with pytest.raises(StageIOError):
         overlay.plot_world_trajectory(np.zeros((10, 2, 20, 3)), None, tmp_path / "bad.png")
+
+
+def test_wrist_comparison_video_and_stills(tmp_path: Path) -> None:
+    frames = write_frames(tmp_path / "frames", count=5)
+    total = len(frames)
+    joints = np.full((total, 2, 21, 3), np.nan)
+    joints[:, :, 0, :] = np.array([0.0, 0.0, 1.5])
+    rotation = np.broadcast_to(np.eye(3), (total, 3, 3)).copy()
+    translation = np.zeros((total, 3))
+    intrinsics = np.broadcast_to(
+        np.array([[60.0, 0.0, 32.0], [0.0, 60.0, 24.0], [0.0, 0.0, 1.0]]), (total, 3, 3)
+    ).copy()
+    valid = np.ones((total, 2), dtype=bool)
+
+    out = overlay.write_wrist_comparison_video(
+        frames,
+        joints,
+        rotation,
+        translation,
+        intrinsics,
+        valid,
+        tmp_path / "gt_vs_pred.mp4",
+        prediction_world=joints,
+        fps=5.0,
+        still_indices=[0, 3],
+    )
+    assert out.is_file() and out.stat().st_size > 0
+    stills = sorted((tmp_path / "gt_vs_pred_stills").glob("*.png"))
+    assert [path.name for path in stills] == ["000000.png", "000003.png"]
+
+    capture = cv2.VideoCapture(str(out))
+    try:
+        assert capture.isOpened()
+        assert int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) == total
+    finally:
+        capture.release()
+
+
+def test_wrist_comparison_draws_only_projectable_points(tmp_path: Path) -> None:
+    frames = write_frames(tmp_path / "frames", count=2)
+    joints = np.full((2, 2, 21, 3), np.nan)
+    joints[:, :, 0, :] = np.array([0.0, 0.0, -1.0])  # behind the camera
+    rotation = np.broadcast_to(np.eye(3), (2, 3, 3)).copy()
+    intrinsics = np.broadcast_to(np.eye(3), (2, 3, 3)).copy()
+    out = overlay.write_wrist_comparison_video(
+        frames,
+        joints,
+        rotation,
+        np.zeros((2, 3)),
+        intrinsics,
+        np.ones((2, 2), dtype=bool),
+        tmp_path / "empty.mp4",
+        fps=2.0,
+    )
+    assert out.is_file()

@@ -95,7 +95,18 @@ def main(argv: list[str] | None = None) -> int:
         )
         payload = report.as_dict()
         payload["fps_source"] = fps_source  # type: ignore[assignment]
+        payload["joint_coverage"] = result.joint_coverage
         print(report.format())
+        print(
+            f"referenced joints : {100.0 * result.joint_coverage:.2f} % of "
+            f"(frame, hand, joint) terms"
+        )
+        if str(ground_truth.metadata.get("hand_joints", "")) == "wrist_only":
+            print(
+                "note: the reference trajectory carries the wrist only (no MANO mesh model "
+                "available to derive finger joints), so every number above is a "
+                "wrist-level Action-MPJPE"
+            )
         if payload["fps_source"] != "pipeline":
             print(
                 "note: FPS above is the evaluation throughput; pass --pipeline-seconds to report "
