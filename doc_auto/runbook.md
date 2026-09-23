@@ -56,7 +56,9 @@ without running anything, `--from-stage phase4-stitch` resumes mid-way.
 
 ## Path B - real backends (GPU server)
 
-Prerequisites: `doc_auto/setup.md` sections 2-4 (envs, checkouts, weights). Gate
+Prerequisites: `doc_auto/setup.md` sections 2-4 (envs, checkouts, weights). The
+weights come from one command - `python scripts/download_weights.py` - which
+prints a final list of anything that needs a manual step. Gate
 each step with `--check` before spending GPU time:
 
 ```bash

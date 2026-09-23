@@ -28,6 +28,8 @@ model (its licence is separate). What is present:
 Ask the project itself at any time - it never guesses:
 
 ```bash
+conda run -n ego3d_base python scripts/download_weights.py --dry-run   # what to fetch, and where it goes
+conda run -n ego3d_base python scripts/download_weights.py             # fetch every fetchable file
 conda run -n ego3d_base python scripts/doctor.py --config configs/macrodata_final.yaml --runners
 ```
 

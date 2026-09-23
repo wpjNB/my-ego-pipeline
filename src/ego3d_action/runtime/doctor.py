@@ -143,10 +143,31 @@ def check_backends(third_party: Path, weights_root: Path) -> list[Check]:
     from ..hand.hawor import probe as probe_hawor
 
     checks: list[Check] = []
-    for label, probe, clone, weights in (
-        ("WiLoR", probe_wilor, "https://github.com/rolpotamias/WiLoR", "weights/wilor"),
-        ("HaWoR", probe_hawor, "https://github.com/ThunderVVV/HaWoR", "weights/hawor"),
-        ("VGGT-Omega", probe_vggt, "https://github.com/facebookresearch/vggt", "weights/vggt-omega"),
+    for label, selector, probe, clone, checkout, weights in (
+        (
+            "WiLoR",
+            "wilor",
+            probe_wilor,
+            "https://github.com/rolpotamias/WiLoR",
+            "WiLoR",
+            "weights/wilor",
+        ),
+        (
+            "HaWoR",
+            "hawor",
+            probe_hawor,
+            "https://github.com/ThunderVVV/HaWoR",
+            "HaWoR",
+            "weights/hawor",
+        ),
+        (
+            "VGGT-Omega",
+            "vggt",
+            probe_vggt,
+            "https://github.com/facebookresearch/vggt",
+            "VGGT-Omega",
+            "weights/vggt-omega",
+        ),
     ):
         status = probe(third_party, weights_root)
         checks.append(
@@ -155,8 +176,8 @@ def check_backends(third_party: Path, weights_root: Path) -> list[Check]:
                 status="ok" if status.available else "missing",
                 detail="checkout + weights present" if status.available else "; ".join(status.missing),
                 fix=(
-                    f"git clone {clone} {third_party / label.replace('-Omega', '-Omega')} and "
-                    f"place the checkpoint in {weights_root}/{weights.split('/')[-1]} "
+                    f"git clone {clone} {third_party / checkout} && "
+                    f"python scripts/download_weights.py --only {selector} "
                     "(see doc_auto/setup.md)"
                 ),
                 section="backends",

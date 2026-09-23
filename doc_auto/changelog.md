@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-09-23 18:40 (+08:00) - one script downloads every weight
+
+* `weights.manifest.yaml`: declares every asset (id, backend, destination,
+  mirror list, size floor, expected container format, sha256 slot, optional /
+  manual flags, source page and follow-up command).
+* `runtime/weights.py` + `scripts/download_weights.py`: resumable
+  (`.part` + HTTP `Range`), verified (size, sha256, format sniffing that does
+  not need torch) and atomic (a file only appears after it passes; corrupt
+  downloads are quarantined as `*.part.bad`). Supports `https://`, `hf://` and
+  `file://` (air-gapped mirrors), `--dry-run`, `--only`, `--verify-only`,
+  `--force`, `--url-override` and `--json`.
+* Honest by construction: MANO (licence-gated) and any entry whose URL is still
+  a `<placeholder>` are never fetched - the report prints the page, the exact
+  filename, the destination and the next command. The manifest header records
+  that its URLs could not be verified from this machine.
+* `doctor.py` fix hints now point at `download_weights.py --only <backend>`.
+* Test suite: **268 passed** (19 new: manifest validation, format sniffing,
+  verification, resume from a partial file, checksum quarantining, mirror
+  fallback, unreachable/unsupported sources and the CLI on a `file://` mirror).
+
 ## 2026-09-23 18:25 (+08:00) - setup + runbook, and an asset audit tool
 
 * `runtime/doctor.py` + `scripts/doctor.py`: audits host tools, python

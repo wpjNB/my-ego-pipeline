@@ -84,13 +84,42 @@ git clone https://github.com/facebookresearch/vggt    third_party/VGGT-Omega
 `third_party/*` is git-ignored. `doctor.py` checks for `third_party/<name>` and
 each runner's `--check` imports the package from there.
 
-## 4. Weights - **nothing is bundled**
+## 4. Weights - **nothing is bundled**, and one script fetches them
 
 This is the honest answer to "are the checkpoints included?": **no**. The
 repository ships code, tests, the HOT3D sample dataset and a synthetic stand-in
 for plumbing runs - no model weights, and the MANO mesh model is not present on
 this machine either (its directories contain only a `.gitkeep` plus
 `mano_mean_params.npz`, which is just the mean pose/shape, not the model).
+
+Everything fetchable is declared in [`weights.manifest.yaml`](../weights.manifest.yaml)
+and downloaded into one tree by [`scripts/download_weights.py`](../scripts/download_weights.py):
+
+```bash
+python scripts/download_weights.py --dry-run            # the plan, no traffic
+python scripts/download_weights.py                      # fetch everything fetchable
+python scripts/download_weights.py --only wilor,hawor   # subset (id, alias or backend)
+python scripts/download_weights.py --verify-only        # audit what is on disk
+python scripts/download_weights.py --url-override hawor_checkpoint=https://...  # moved URL
+```
+
+Properties worth knowing:
+
+* **resumable** - partial downloads live in `<dest>.part` and continue with an
+  HTTP `Range` request (or simply resume from a `file://` mirror);
+* **verified** - size floor, optional `sha256`, and format sniffing that works
+  without torch (a modern `torch.save` file is a zip, a legacy one a pickle,
+  `safetensors` starts with a JSON header, `npz` is a zip with `.npy` members);
+* **atomic** - a file only appears at its final path after it passes; a corrupt
+  download is quarantined as `<dest>.part.bad` instead of being installed;
+* **honest about the rest** - `auth: manual` entries (MANO) and entries whose
+  URL is still a `<placeholder>` are never fetched; the run ends with the exact
+  page, filename, destination and follow-up command.
+
+**The URLs in the manifest were transcribed from each project's documentation
+and could not be verified from the development machine (no network).** The
+script checks every download, so a moved URL shows up as an error with the
+mirrors it tried - fix it with `--url-override` or by editing the manifest.
 
 | Asset | Where it goes | Source | Needed for |
 | --- | --- | --- | --- |
@@ -99,9 +128,10 @@ this machine either (its directories contain only a `.gitkeep` plus
 | VGGT-Omega `VGGT-Omega-1B-416-Reproduction` | `weights/vggt-omega/` | VGGT-Omega release page | Phase 3 |
 | MANO model (`MANO_RIGHT.pkl`) | `weights/mano/` (converted to `.npz`) | mano.is.tue.mpg.de (licence + registration) | 21-joint references |
 
-Copy `third_party/README.md`'s commands and the table above; then verify:
+Then verify end to end:
 
 ```bash
+conda run -n ego3d_base python scripts/download_weights.py --verify-only
 conda run -n ego3d_base python scripts/doctor.py --config configs/macrodata_final.yaml --runners
 # every backend should print ok; --check reports the exact missing file otherwise
 ```
