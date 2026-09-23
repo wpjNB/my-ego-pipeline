@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-09-23 18:25 (+08:00) - setup + runbook, and an asset audit tool
+
+* `runtime/doctor.py` + `scripts/doctor.py`: audits host tools, python
+  dependencies, config validity, the three backends (checkout + weights, and
+  optionally each runner's `--check` executed through its configured
+  interpreter) and the data on disk. Never raises; every failing check carries
+  the fix; `--json`/`--strict` for CI.
+* Asset audit result on this machine: `ego3d_base` complete, **all model
+  checkpoints and checkouts absent**, MANO absent (only `mano_mean_params.npz`
+  exists in the HaWoR/VITRA clones). CPU path ready, GPU path needs the
+  downloads.
+* `doc_auto/setup.md`: prerequisites, base env, the three backend envs, checkout
+  commands, the weights table (what/where/source/needed-for), MANO conversion,
+  environment variables and known constraints.
+* `doc_auto/runbook.md`: Path A (CPU/mock) and Path B (GPU/real) step by step
+  with the exact commands, expected artefacts per stage, what "done" looks like,
+  a troubleshooting table and the API drift to expect on the first real run.
+* README leads with the honest status table and links both documents.
+* Test suite: **249 passed**.
+
 ## 2026-09-23 18:05 (+08:00) - MANO forward kinematics, backend runners written
 
 * `hand/mano_model.py`: numpy MANO forward kinematics (shape blend shapes, pose

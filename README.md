@@ -9,6 +9,41 @@ intermediate artefacts, the coordinate conventions, the window stitching, the
 post-processing and the evaluation - and treats WiLoR, HaWoR and VGGT-Omega as
 external backends that run in their own environments.
 
+## Status of this checkout: code yes, weights no
+
+This repository ships **code, tests, the HOT3D sample dataset and a synthetic
+stand-in for the models - but no model weights**. That is the honest answer to
+"are the checkpoints included?": they are not, and neither is the MANO mesh
+model (its licence is separate). What is present:
+
+| Asset | Present? | Where |
+| --- | --- | --- |
+| Orchestrator env `ego3d_base` | yes | `environment-base.yml`, 249 tests green |
+| HOT3D sample (8 clips, 3600 frames) | yes | `data/samples/lerobot_v3` (git-ignored) |
+| Synthetic MANO stand-in | yes, generated | `python scripts/make_synthetic_mano.py` |
+| WiLoR checkpoint + the other two | **no** | `weights/wilor`, `weights/hawor`, `weights/vggt-omega` |
+| Backend checkouts | **no** | `third_party/{WiLoR,HaWoR,VGGT-Omega}` |
+| MANO model (for 21-joint references) | **no** | `weights/mano`, licence-gated |
+
+Ask the project itself at any time - it never guesses:
+
+```bash
+conda run -n ego3d_base python scripts/doctor.py --config configs/macrodata_final.yaml --runners
+```
+
+```
+[backends]
+  MISS  backend:WiLoR       checkout at third_party/WiLoR; weights at weights/wilor
+  ...
+CPU path: ready (tests, mock pipeline, reference import, evaluation)
+GPU path: not complete (4 missing, 1 warnings) - see doc_auto/setup.md
+```
+
+Full instructions: **[doc_auto/setup.md](doc_auto/setup.md)** (environments,
+checkouts, the weights download list, MANO) and
+**[doc_auto/runbook.md](doc_auto/runbook.md)** (how to run both paths, expected
+artefacts per stage, troubleshooting).
+
 ## Reference configuration
 
 | Module | Configuration |

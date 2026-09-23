@@ -6,7 +6,7 @@ runtime:
   log_level: INFO
 
 paths:
-  data_root: data
+  data_root: data/hot3d    # the HOT3D profile keeps its clips apart from ad-hoc ones
   third_party: third_party
   weights: weights
   outputs: outputs

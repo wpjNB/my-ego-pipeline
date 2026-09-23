@@ -2,7 +2,7 @@
 
 Last modified: 2026-09-23 18:05 (+08:00)
 
-Test suite: **239 passed in ~12 s** on the CPU-only laptop
+Test suite: **249 passed in ~13 s** on the CPU-only laptop
 (`conda run -n ego3d_base python -m pytest -q`).
 
 ## Complete and tested (CPU)
