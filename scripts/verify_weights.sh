@@ -49,7 +49,8 @@ ENTRIES=(
 
 human() {
     awk -v b="$1" 'BEGIN{
-        if (b >= 1073741824) printf "%.2f GiB", b/1073741824;
+        if (b < 1024) printf "%d B", b;
+        else if (b >= 1073741824) printf "%.2f GiB", b/1073741824;
         else if (b >= 1048576) printf "%.1f MiB", b/1048576;
         else printf "%.0f KiB", b/1024 }'
 }

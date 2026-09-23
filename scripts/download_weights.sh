@@ -63,9 +63,12 @@ wants() {
     return 1
 }
 
-fetch() {  # fetch <url> <destination> <label> <min_bytes>
-    local url="$1" dest="$2" label="$3" min_bytes="$4"
+# fetch <url> <destination> <label> <min_bytes> [required=1]
+#   A failure of an optional asset is reported as [warn] and does not fail the run.
+fetch() {
+    local url="$1" dest="$2" label="$3" min_bytes="$4" required="${5:-1}"
     local part="${dest}.part"
+    local fail_reason=""
 
     if [[ -f "${dest}" ]]; then
         local size
@@ -87,40 +90,72 @@ fetch() {  # fetch <url> <destination> <label> <min_bytes>
 
     mkdir -p "$(dirname "${dest}")"   # a dry run must not touch the filesystem
     echo "  [get]    ${label}"
+    local ok=1
     case "${url}" in
         file://*|/*)
             # Local mirror. GNU wget refuses file:// ("Unsupported scheme"), so
             # handle it here and keep the script usable with either tool.
             local src="${url#file://}"
             if [[ ! -f "${src}" ]]; then
-                echo "  [FAIL]   ${label}: mirror file not found (${src})" >&2
-                return 1
+                fail_reason="mirror file not found (${src})"
+            elif cp -f "${src}" "${part}"; then
+                ok=0
+            else
+                fail_reason="cannot copy from ${src}"
             fi
-            cp -f "${src}" "${part}" || {
-                echo "  [FAIL]   ${label}: cannot copy from ${src}" >&2; return 1; }
             ;;
         *)
             if command -v wget >/dev/null 2>&1; then
-                wget -c --progress=dot:giga -O "${part}" "${url}" || {
-                    echo "  [FAIL]   ${label}: wget failed (${url})" >&2; return 1; }
+                if wget -c --progress=dot:giga -O "${part}" "${url}"; then
+                    ok=0
+                else
+                    fail_reason="wget failed (${url})"
+                fi
             elif command -v curl >/dev/null 2>&1; then
-                curl -L -C - --fail --progress-bar -o "${part}" "${url}" || {
-                    echo "  [FAIL]   ${label}: curl failed (${url})" >&2; return 1; }
+                if curl -L -C - --fail --progress-bar -o "${part}" "${url}"; then
+                    ok=0
+                else
+                    fail_reason="curl failed (${url})"
+                fi
             else
-                echo "  [FAIL]   neither wget nor curl is installed" >&2
-                return 1
+                fail_reason="neither wget nor curl is installed"
             fi
             ;;
     esac
 
+    if [[ "${ok}" != "0" ]]; then
+        if [[ "${required}" == "1" ]]; then
+            echo "  [FAIL]   ${label}: ${fail_reason}" >&2
+        else
+            echo "  [warn]   ${label}: ${fail_reason} (optional, ignored)" >&2
+        fi
+        # A transport that died before writing anything leaves a zero-byte .part;
+        # drop it. A genuinely partial file is kept so `wget -c`/`curl -C -` can
+        # resume it on the next run.
+        if [[ -f "${part}" && ! -s "${part}" ]]; then
+            rm -f "${part}"
+        elif [[ -s "${part}" ]]; then
+            echo "           partial download kept at ${part} (re-run to resume)" >&2
+        fi
+        if [[ "${required}" == "1" ]]; then
+            return 1
+        fi
+        return 0
+    fi
+
     local size
     size=$(wc -c <"${part}")
     if [[ "${size}" -lt "${min_bytes}" ]]; then
-        echo "  [FAIL]   ${label}: only ${size} bytes (expected >= ${min_bytes})" >&2
-        echo "           the URL may have moved - edit the URL in this script," >&2
-        echo "           or download the file by hand; see doc_auto/setup.md" >&2
+        if [[ "${required}" == "1" ]]; then
+            echo "  [FAIL]   ${label}: only ${size} bytes (expected >= ${min_bytes})" >&2
+            echo "           the URL may have moved - edit the URL in this script," >&2
+            echo "           or download the file by hand; see doc_auto/setup.md" >&2
+        else
+            echo "  [warn]   ${label}: only ${size} bytes (optional, ignored)" >&2
+        fi
         rm -f "${part}"
-        return 1
+        [[ "${required}" == "1" ]] && return 1
+        return 0
     fi
     mv "${part}" "${dest}"
     echo "  [ok]     ${label}: $(human "${size}")"
@@ -128,7 +163,9 @@ fetch() {  # fetch <url> <destination> <label> <min_bytes>
 
 human() {
     local bytes="$1"
-    if [[ "${bytes}" -ge 1073741824 ]]; then
+    if [[ "${bytes}" -lt 1024 ]]; then
+        printf '%s B' "${bytes}"
+    elif [[ "${bytes}" -ge 1073741824 ]]; then
         awk -v b="${bytes}" 'BEGIN{printf "%.2f GiB", b/1073741824}'
     elif [[ "${bytes}" -ge 1048576 ]]; then
         awk -v b="${bytes}" 'BEGIN{printf "%.1f MiB", b/1048576}'
@@ -175,8 +212,9 @@ if wants wilor; then
         "${DEST}/wilor/wilor_final.ckpt" "WiLoR checkpoint" 10000000 || status=1
     fetch "${WILOR_BASE}/model_config.yaml" \
         "${DEST}/wilor/model_config.yaml" "WiLoR model config" 100 || status=1
+    # The YOLO detector is optional: this project detects with WiLoR's own model.
     fetch "${WILOR_BASE}/detector.pt" \
-        "${DEST}/wilor/detector.pt" "WiLoR detector" 1000000 || status=1
+        "${DEST}/wilor/detector.pt" "WiLoR detector" 1000000 0 || status=1
 fi
 
 if wants hawor; then
@@ -186,8 +224,9 @@ if wants hawor; then
         "${DEST}/hawor/checkpoints/hawor.ckpt" "HaWoR checkpoint" 10000000 || status=1
     fetch "${HAWOR_BASE}/hawor/checkpoints/infiller.pt" \
         "${DEST}/hawor/checkpoints/infiller.pt" "HaWoR infiller" 1000000 || status=1
+    # Also ships inside the HaWoR checkout, so a missing mirror copy is not fatal.
     fetch "${HAWOR_BASE}/hawor/model_config.yaml" \
-        "${DEST}/hawor/checkpoints/model_config.yaml" "HaWoR model config" 100 || status=1
+        "${DEST}/hawor/checkpoints/model_config.yaml" "HaWoR model config" 100 0 || status=1
 fi
 
 if wants vggt; then
