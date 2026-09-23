@@ -232,6 +232,7 @@ def build_parser() -> argparse.ArgumentParser:
     vggt.add_argument("--depth-height", type=int, default=synthetic.DEFAULT_DEPTH_SIZE[0])
     vggt.add_argument("--depth-width", type=int, default=synthetic.DEFAULT_DEPTH_SIZE[1])
     vggt.add_argument("--checkpoint", default="VGGT-Omega-1B-416-Reproduction")
+    vggt.add_argument("--frames", default=None)
     add_backend_args(vggt)
     vggt.set_defaults(func=command_vggt)
 

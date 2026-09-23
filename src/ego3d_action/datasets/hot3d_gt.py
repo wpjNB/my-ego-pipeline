@@ -41,6 +41,12 @@ from ..datasets.lerobot import LeRobotDataset, LeRobotEpisode
 from ..errors import StageIOError
 from ..camera.camera_pose import world_frame_alignment
 from ..geometry.transforms import invert_rigid
+from ..hand.mano_model import (
+    ManoModel,
+    forward_kinematics,
+    landmarks_match_topology,
+    mirror_pose,
+)
 from ..io.serialization import save_json, save_npz
 
 logger = logging.getLogger(__name__)
@@ -83,8 +89,17 @@ def convert_episode(
     episode_index: int,
     *,
     fps_override: float | None = None,
+    mano_models: dict[str, ManoModel] | None = None,
 ) -> Hot3dEpisode:
     """Build the trajectory arrays + metadata for one episode.
+
+    Args:
+        dataset: the LeRobot v3 dataset.
+        episode_index: which episode to convert.
+        fps_override: frame rate override (defaults to the dataset's).
+        mano_models: optional ``{"left": ManoModel, "right": ManoModel}``. When
+            given, the 21 joint positions are computed by MANO forward
+            kinematics instead of leaving joints 1..20 empty.
 
     Raises:
         StageIOError: on a missing/oddly shaped column or a malformed rotation.
@@ -151,6 +166,11 @@ def convert_episode(
 
     bbox = np.full((total, 2, 4), np.nan, dtype=np.float64)
     track_id = np.where(valid, 0, -1).astype(np.int64)
+    joints_mode = "wrist_only"
+    if mano_models:
+        joints, joints_mode = _joints_from_mano(
+            mano_models, betas, hand_pose, root_rot, joints, valid
+        )
     arrays: dict[str, Array] = {
         "frames": np.arange(total, dtype=np.int64),
         "timestamps": np.arange(total, dtype=np.float64) / fps,
@@ -193,10 +213,20 @@ def convert_episode(
         "dataset_root": str(dataset.root),
         "video": str(episode.video_path),
         "task": episode.task,
-        "hand_joints": "wrist_only",
+        "hand_joints": joints_mode,
         "hand_joints_note": (
-            "the sample stores a wrist pose plus 15 joint rotations; 21 joint positions "
+            "21 joint positions from MANO forward kinematics"
+            if joints_mode.startswith("mano_fk")
+            else "the sample stores a wrist pose plus 15 joint rotations; 21 joint positions "
             "need the MANO mesh model (absent, licence-gated), so joints 1..20 are NaN"
+        ),
+        "mano_model": (
+            {hands: model.source for hands, model in mano_models.items()} if mano_models else None
+        ),
+        "mano_mirrored": (
+            {hands: bool(model.mirrored) for hands, model in mano_models.items()}
+            if mano_models
+            else None
         ),
         "state_layout": STATE_LAYOUT,
         "state_layout_inferred": True,
@@ -208,12 +238,13 @@ def convert_episode(
         "height": height,
     }
     logger.info(
-        "episode %d: %d frames @ %.1f fps, coverage left %.1f%% right %.1f%% (wrist-only GT)",
+        "episode %d: %d frames @ %.1f fps, coverage left %.1f%% right %.1f%% (%s)",
         episode_index,
         total,
         fps,
         100.0 * metadata["coverage_left"],
         100.0 * metadata["coverage_right"],
+        joints_mode,
     )
     return Hot3dEpisode(
         arrays=arrays,
@@ -225,6 +256,53 @@ def convert_episode(
         video_path=episode.video_path,
         task=episode.task,
     )
+
+
+def _joints_from_mano(
+    mano_models: dict[str, ManoModel],
+    betas: Array,
+    hand_pose: Array,
+    root_rot: Array,
+    reference_wrist: Array,
+    valid: Array,
+) -> tuple[Array, str]:
+    """Fill all 21 joints with MANO forward kinematics.
+
+    The wrist stays exactly where the dataset says it is (``align='wrist'``), so
+    the 21-joint reference remains consistent with the wrist-only one it
+    replaces. A ``False`` from :func:`landmarks_match_topology` is logged as a
+    warning - it usually means the landmark mapping disagrees with the model.
+    """
+    total = reference_wrist.shape[0]
+    joints = reference_wrist.copy()
+    mirrored_any = False
+    for hand, side in enumerate(("left", "right")):
+        model = mano_models.get(side)
+        if model is None:
+            logger.warning("no %s MANO model supplied; hand %d stays wrist-only", side, hand)
+            continue
+        if model.mirrored:
+            mirrored_any = True
+            pose, root = mirror_pose(hand_pose[:, hand], root_rot[:, hand])
+        else:
+            pose, root = hand_pose[:, hand], root_rot[:, hand]
+        landmarks = forward_kinematics(
+            model,
+            betas[:, hand],
+            pose,
+            root_rotation=root,
+            root_translation=reference_wrist[:, hand, 0, :],
+        )
+        frame_valid = valid[:, hand]
+        joints[:, hand] = np.where(frame_valid[:, None, None], landmarks, np.nan)
+        if frame_valid.any() and not landmarks_match_topology(landmarks[frame_valid]):
+            logger.warning(
+                "hand %d: MANO landmarks do not follow the project topology; check the "
+                "landmark mapping against the model",
+                hand,
+            )
+    mode = "mano_fk_mirrored" if mirrored_any else "mano_fk"
+    return joints, mode
 
 
 def write_episode(

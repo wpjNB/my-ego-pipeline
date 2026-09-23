@@ -175,6 +175,121 @@ def save_hand_window(window: HandWindow, path: str | Path) -> Path:
     return save_npz(path, **payload)
 
 
+def hawor_tracks_from_detection(
+    *,
+    boxes: np.ndarray,
+    confidence: np.ndarray,
+    valid: np.ndarray,
+) -> tuple[np.ndarray, dict[int, list[dict[str, object]]]]:
+    """Build HaWoR's ``(model_boxes, model_tracks)`` structures from our tracking.
+
+    HaWoR's demo starts from ``detect_track(imgfiles, thresh=0.2)``, which both
+    detects *and* decides tracking. This project deliberately replaces that
+    rule set with the conservative tracker of Phase 1, and this function is the
+    seam: our ``detection.npz`` becomes the ``model_tracks`` file that
+    ``hawor_motion_estimation`` consumes, so HaWoR reconstructs exactly the
+    frames our tracker kept - never more.
+
+    Args:
+        boxes: ``[T, 2, 4]`` tracked boxes (NaN where invalid).
+        confidence: ``[T, 2]`` detector confidences.
+        valid: ``[T, 2]`` tracker decision.
+
+    Raises:
+        StageIOError: on shape mismatches.
+    """
+    box_array = np.asarray(boxes, dtype=np.float64)
+    conf_array = np.asarray(confidence, dtype=np.float64)
+    valid_array = np.asarray(valid, dtype=bool)
+    if box_array.ndim != 3 or box_array.shape[1:] != (2, 4):
+        raise StageIOError(f"boxes must be [T, 2, 4], got {box_array.shape}")
+    if conf_array.shape != box_array.shape[:2] or valid_array.shape != box_array.shape[:2]:
+        raise StageIOError(
+            f"confidence {conf_array.shape} and valid {valid_array.shape} must match "
+            f"{box_array.shape[:2]}"
+        )
+
+    tracks: dict[int, list[dict[str, object]]] = {0: [], 1: []}
+    per_frame_boxes: list[list[np.ndarray]] = [[] for _ in range(box_array.shape[0])]
+    for frame in range(box_array.shape[0]):
+        for hand in (0, 1):
+            if not valid_array[frame, hand]:
+                continue
+            entry = np.array([*box_array[frame, hand], conf_array[frame, hand]], dtype=np.float64)
+            tracks[hand].append(
+                {
+                    "frame": frame,
+                    "det": True,
+                    "det_box": entry[None, :],
+                    "det_handedness": np.array([hand]),
+                }
+            )
+            per_frame_boxes[frame].append(entry)
+    # HaWoR's own detect_track returns an empty object array here; keep the same
+    # shape for compatibility but fill it with what we know.
+    model_boxes = np.array(per_frame_boxes, dtype=object)
+    return model_boxes, tracks
+
+
+def save_hawor_tracks(
+    directory: str | Path,
+    model_boxes: np.ndarray,
+    tracks: dict[int, list[dict[str, object]]],
+) -> list[Path]:
+    """Write ``model_boxes.npy`` / ``model_tracks.npy`` where HaWoR expects them."""
+    target = Path(directory)
+    target.mkdir(parents=True, exist_ok=True)
+    written = []
+    for name, payload in (("model_boxes.npy", model_boxes), ("model_tracks.npy", tracks)):
+        path = target / name
+        np.save(path, payload)
+        written.append(path)
+    return written
+
+
+def hand_windows_from_joints(
+    joints_camera: np.ndarray,
+    valid: np.ndarray,
+    confidence: np.ndarray,
+    *,
+    out_dir: str | Path,
+    window: int = 16,
+    overlap: int = 8,
+    root_rot: np.ndarray | None = None,
+    betas: np.ndarray | None = None,
+) -> list[Path]:
+    """Split camera-space joints into the 16/8 HaWoR windows on disk.
+
+    ``joints_camera`` is ``[T, 2, 21, 3]`` in metres; frames without a hand must
+    be ``NaN`` and invalid. Nothing is interpolated.
+    """
+    joints = np.asarray(joints_camera, dtype=np.float64)
+    if joints.ndim != 4 or joints.shape[1:] != (2, 21, 3):
+        raise StageIOError(f"joints_camera must be [T, 2, 21, 3], got {joints.shape}")
+    valid_array = np.asarray(valid, dtype=bool)
+    conf_array = np.asarray(confidence, dtype=np.float64)
+    if valid_array.shape != joints.shape[:2] or conf_array.shape != joints.shape[:2]:
+        raise StageIOError(
+            f"valid {valid_array.shape} and confidence {conf_array.shape} must match "
+            f"{joints.shape[:2]}"
+        )
+    request = HaworClipRequest(num_frames=joints.shape[0], frames_dir=Path("."), window=window, overlap=overlap)
+    written: list[Path] = []
+    target = Path(out_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    for start, end in request.ranges():
+        window_obj = HandWindow(
+            start=start,
+            joints_camera=np.where(valid_array[start:end, :, None, None], joints[start:end], np.nan),
+            valid=valid_array[start:end],
+            confidence=conf_array[start:end],
+            root_rot=None if root_rot is None else np.asarray(root_rot)[start:end],
+            betas=None if betas is None else np.asarray(betas)[start:end],
+        )
+        written.append(save_hand_window(window_obj, target / f"{start:06d}_{end - 1:06d}.npz"))
+    return written
+
+
 def blend_windows(windows: list[HandWindow]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Blend overlapping windows (the model-free half of Phase 2)."""
     result = blend_hand_windows(windows)

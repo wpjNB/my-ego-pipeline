@@ -23,7 +23,10 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ego3d_action.camera.window import CameraWindow, WindowRange, make_windows, save_camera_window  # noqa: E402
+from ego3d_action.camera.depth import scale_intrinsics  # noqa: E402
+from ego3d_action.camera.vggt_omega import camera_window_from_output  # noqa: E402
+from ego3d_action.camera.window import make_windows, save_camera_window  # noqa: E402
+from ego3d_action.geometry.transforms import invert_rigid  # noqa: E402
 
 BACKEND_MODULE = "vggt"
 SUPPORTED_CHECKPOINTS = (
@@ -31,6 +34,8 @@ SUPPORTED_CHECKPOINTS = (
     "VGGT-Omega-1B-512",
     "VGGT-Omega-1B-256-Text-Alignment",
 )
+
+_MODEL_CACHE: dict[tuple[str, str], object] = {}
 
 
 def emit(payload: dict[str, object]) -> None:
@@ -51,27 +56,127 @@ def backend_available(third_party: Path, weights: Path) -> tuple[bool, str]:
     return True, f"'{BACKEND_MODULE}' importable from {checkout}, checkpoints in {weights}"
 
 
-def run_model(
-    args: argparse.Namespace, rng: WindowRange
-) -> dict[str, np.ndarray]:
-    """Run VGGT-Omega on one window.
+def load_model(args: argparse.Namespace) -> object:
+    """Load VGGT-Omega once per process (model loading dominates the runtime)."""
+    key = (str(args.weights), str(args.checkpoint))
+    if key in _MODEL_CACHE:
+        return _MODEL_CACHE[key]
+    weights = Path(args.weights)
+    candidates = [
+        weights / args.checkpoint,
+        weights,
+    ]
+    checkpoint_dir = next((path for path in candidates if path.is_dir()), None)
+    if checkpoint_dir is None:
+        raise FileNotFoundError(
+            f"no checkpoint directory for '{args.checkpoint}' under {weights}"
+        )
+    from vggt.models.vggt import VGGT  # noqa: PLC0415 - backend import
 
-    Must return ``rotation_c2w [n, 3, 3]``, ``translation_c2w [n, 3]`` (the
-    window's own first camera defines its frame), ``intrinsics [n, 3, 3]`` and
-    metric ``depth [n, H, W]`` - optionally with ``depth_confidence``.
+    model = VGGT.from_pretrained(str(checkpoint_dir))
+    try:
+        import torch  # noqa: PLC0415
+
+        device = args.device if args.device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu")
+        model = model.to(device).eval()
+        print(f"VGGT-Omega loaded on {device}", file=sys.stderr)
+    except ImportError as exc:  # pragma: no cover - only without torch
+        raise ImportError("VGGT requires torch in this environment") from exc
+    _MODEL_CACHE[key] = model
+    return model
+
+
+def decode_predictions(
+    predictions: object, *, image_size: tuple[int, int], resolution: int
+) -> dict[str, np.ndarray]:
+    """Turn VGGT's raw output into window arrays in **this project's** convention.
+
+    VGGT reports world-to-camera extrinsics and pixel intrinsics for the input
+    image, while the depth map may live on a coarser grid - so the intrinsics are
+    rescaled to the depth resolution here, which is the pair the stitcher
+    actually uses.
     """
-    raise NotImplementedError(
-        "VGGT-Omega window inference is not wired to the backend API yet. Implement run_model() "
-        f"with VGGT-Omega's inference entry point (checkout={args.third_party}/VGGT-Omega, "
-        f"checkpoint={args.checkpoint} in {args.weights}, resolution={args.resolution}, "
-        f"device={args.device}) for frames [{rng.start}, {rng.end})."
+    def pick(*names: str) -> object | None:
+        for name in names:
+            if isinstance(predictions, dict) and name in predictions:
+                return predictions[name]
+            if hasattr(predictions, name):
+                return getattr(predictions, name)
+        return None
+
+    pose_enc = pick("pose_enc", "pose_encoding", "camera_pose")
+    depth = pick("depth", "depth_map")
+    if pose_enc is None or depth is None:
+        available = sorted(predictions.keys()) if isinstance(predictions, dict) else dir(predictions)
+        raise NotImplementedError(
+            "cannot decode VGGT output: expected a pose encoding and a depth map. "
+            f"Available: {available}"
+        )
+    try:
+        from vggt.utils.pose_enc import pose_encoding_to_extri_intri  # noqa: PLC0415
+    except ImportError as exc:  # pragma: no cover - backend import
+        raise ImportError(
+            "vggt.utils.pose_enc.pose_encoding_to_extri_intri is required to decode the camera"
+        ) from exc
+
+    import torch  # noqa: PLC0415
+
+    extrinsics, intrinsics = pose_encoding_to_extri_intri(
+        torch.as_tensor(pose_enc), image_size
     )
+    extrinsics = np.asarray(extrinsics.detach().cpu(), dtype=np.float64).reshape(-1, 3, 4)
+    intrinsics = np.asarray(intrinsics.detach().cpu(), dtype=np.float64).reshape(-1, 3, 3)
+    depth_array = np.asarray(depth.detach().cpu(), dtype=np.float64).reshape(
+        intrinsics.shape[0], *np.shape(depth)[-2:]
+    )
+    confidence = pick("depth_conf", "depth_confidence")
+
+    rotation_c2w, translation_c2w = invert_rigid(extrinsics[:, :3, :3], extrinsics[:, :3, 3])
+    depth_size = (int(depth_array.shape[2]), int(depth_array.shape[1]))  # (w, h)
+    image_wh = (int(image_size[1]), int(image_size[0]))
+    scaled = scale_intrinsics(
+        intrinsics, source_size=image_wh, target_size=depth_size
+    )
+    return {
+        "rotation_c2w": rotation_c2w,
+        "translation_c2w": translation_c2w,
+        "intrinsics": scaled,
+        "depth": depth_array,
+        **(
+            {"depth_confidence": np.asarray(confidence.detach().cpu(), dtype=np.float64)}
+            if confidence is not None
+            else {}
+        ),
+        "resolution": np.array([resolution]),
+    }
+
+
+def run_model(args: argparse.Namespace, rng: object) -> dict[str, np.ndarray]:
+    """Run VGGT-Omega on one window and return window arrays (poses + depth)."""
+    import torch  # noqa: PLC0415
+    from vggt.utils.load_fn import load_and_preprocess_images  # noqa: PLC0415
+
+    frames_dir = Path(args.frames)
+    image_paths = [
+        str(frames_dir / f"{index:06d}.jpg") for index in range(rng.start, rng.end)
+    ]
+    missing = [path for path in image_paths if not Path(path).is_file()]
+    if missing:
+        raise FileNotFoundError(f"{len(missing)} frame(s) missing, e.g. {missing[0]}")
+
+    model = load_model(args)
+    images = load_and_preprocess_images(image_paths, image_resolution=args.resolution)
+    with torch.no_grad():
+        predictions = model(images)
+    height, width = int(images.shape[-2]), int(images.shape[-1])
+    return decode_predictions(predictions, image_size=(height, width), resolution=args.resolution)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="VGGT-Omega runner")
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--out-dir", default=None)
+    parser.add_argument("--frames", default=None)
     parser.add_argument("--num-frames", type=int, default=None)
     parser.add_argument("--window", type=int, default=200)
     parser.add_argument("--overlap", type=int, default=40)
@@ -111,12 +216,13 @@ def main(argv: list[str] | None = None) -> int:
         written: list[str] = []
         for rng in ranges:
             result = run_model(args, rng)
-            window = CameraWindow(
-                window=rng,
-                rotation_c2w=np.asarray(result["rotation_c2w"], dtype=np.float64),
-                translation_c2w=np.asarray(result["translation_c2w"], dtype=np.float64),
-                intrinsics=np.asarray(result["intrinsics"], dtype=np.float64),
-                depth=np.asarray(result["depth"], dtype=np.float64),
+            window = camera_window_from_output(
+                start=rng.start,
+                end=rng.end,
+                rotation_c2w=result["rotation_c2w"],
+                translation_c2w=result["translation_c2w"],
+                intrinsics=result["intrinsics"],
+                depth=result["depth"],
                 depth_confidence=result.get("depth_confidence"),
             )
             path = out_dir / f"{rng.start:06d}_{rng.end - 1:06d}.npz"

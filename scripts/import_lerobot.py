@@ -28,6 +28,7 @@ from ego3d_action.cli import base_parser, build_context, fail  # noqa: E402
 from ego3d_action.datasets.hot3d_gt import convert_episode, write_episode  # noqa: E402
 from ego3d_action.datasets.lerobot import LeRobotDataset  # noqa: E402
 from ego3d_action.errors import Ego3DActionError  # noqa: E402
+from ego3d_action.hand.mano_model import load_mano_models  # noqa: E402
 from ego3d_action.io.artefacts import ClipLayout  # noqa: E402
 from ego3d_action.io.frames import preprocess_video  # noqa: E402
 from ego3d_action.io.serialization import save_json  # noqa: E402
@@ -39,6 +40,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--episode", type=int, required=True, help="episode index to import")
     parser.add_argument("--no-frames", action="store_true", help="only write the ground truth")
     parser.add_argument("--overwrite", action="store_true", help="re-decode frames if present")
+    parser.add_argument(
+        "--mano-model",
+        default=None,
+        help="MANO model file or directory; enables 21-joint ground truth",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -51,7 +57,19 @@ def main(argv: list[str] | None = None) -> int:
             return fail("--root is required (or set paths.lerobot_root in the config)")
 
         dataset = LeRobotDataset(root)
-        episode = convert_episode(dataset, args.episode)
+        mano_path = args.mano_model or context.config.get("paths.mano_model", None)
+        mano_models = load_mano_models(mano_path) if mano_path else None
+        if mano_models:
+            print(
+                "MANO models: "
+                + ", ".join(
+                    f"{hands}={model.source}{' (mirrored)' if model.mirrored else ''}"
+                    for hands, model in mano_models.items()
+                )
+            )
+        else:
+            print("no MANO model configured -> wrist-only reference (see --mano-model)")
+        episode = convert_episode(dataset, args.episode, mano_models=mano_models)
         print(
             f"episode {args.episode}: {episode.num_frames} frames, "
             f"{episode.width}x{episode.height} @ {episode.fps:.1f} fps"
@@ -62,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
             f"  coverage: left {100.0 * episode.metadata['coverage_left']:.1f}% "
             f"right {100.0 * episode.metadata['coverage_right']:.1f}%"
         )
+        print(f"  reference: {episode.metadata['hand_joints']}")
 
         if args.dry_run:
             print(f"would write {layout.trajectory_dir / 'ground_truth.npz'}")
@@ -95,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
                     "image_format": "jpg",
                     "frame_pattern": "%06d.jpg",
                     "stage": "phase0_preprocess",
-                    "hand_joints": "wrist_only",
+                    "hand_joints": episode.metadata["hand_joints"],
                 },
             )
 

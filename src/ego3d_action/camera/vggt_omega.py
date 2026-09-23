@@ -86,6 +86,7 @@ def run_window(
     weights_root: str | Path,
     out_dir: str | Path,
     num_frames: int,
+    frames_dir: str | Path | None = None,
     window: int = 200,
     overlap: int = 40,
     log_path: Path | None = None,
@@ -111,6 +112,7 @@ def run_window(
         *prefix,
         "--out-dir",
         str(out_dir),
+        *(["--frames", str(frames_dir)] if frames_dir is not None else []),
         "--num-frames",
         str(num_frames),
         "--window",
@@ -157,3 +159,41 @@ def empty_window(start: int, end: int, *, height: int, width: int, intrinsics: n
         intrinsics=np.broadcast_to(intrinsics, (num, 3, 3)).copy(),
         depth=np.full((num, height, width), np.nan),
     )
+
+
+def camera_window_from_output(
+    *,
+    start: int,
+    end: int,
+    rotation_c2w: np.ndarray,
+    translation_c2w: np.ndarray,
+    intrinsics: np.ndarray,
+    depth: np.ndarray,
+    depth_confidence: np.ndarray | None = None,
+) -> CameraWindow:
+    """Validate a backend's raw window output and wrap it as a :class:`CameraWindow`.
+
+    This is the single place where "what the model returned" becomes "what the
+    pipeline trusts": shapes, frame count and the window range are checked here,
+    so a backend that silently truncates or transposes a depth map fails at the
+    boundary instead of producing a plausible-looking wrong trajectory.
+
+    Raises:
+        StageIOError: on shape mismatch or an inconsistent frame count.
+    """
+    num = int(np.asarray(depth).shape[0])
+    if end - start != num:
+        raise StageIOError(
+            f"window [{start}, {end}) has {end - start} frames but the backend returned {num}"
+        )
+    window = CameraWindow(
+        window=WindowRange(index=0, start=start, end=end),
+        rotation_c2w=np.asarray(rotation_c2w, dtype=np.float64),
+        translation_c2w=np.asarray(translation_c2w, dtype=np.float64),
+        intrinsics=np.asarray(intrinsics, dtype=np.float64),
+        depth=np.asarray(depth, dtype=np.float64),
+        depth_confidence=None if depth_confidence is None else np.asarray(depth_confidence, dtype=np.float64),
+    )
+    if not np.isfinite(window.depth).any():
+        logger.warning("window %s has no finite depth values", window.name)
+    return window

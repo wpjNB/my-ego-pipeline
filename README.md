@@ -99,13 +99,34 @@ with the reference camera:
 
 ![ground truth on the sample](/home/wpj/ego/my-ego-pipeline/data/hot3d/hot3d_ep000/visualization/gt_vs_pred_stills/000150.png)
 
-One honest limitation: the sample stores a wrist pose plus 15 joint rotations,
-not 21 joint positions. Turning those into fingertips needs the MANO mesh model
-(`v_template`/`shapedirs`/`J_regressor`/`weights`), which is not bundled and is
-licence-gated - so joints 1..20 are written as `NaN` and the metadata records
-`hand_joints: "wrist_only"`. The evaluation masks per joint and reports
-`referenced joints: 4.7 %`, so you get a wrist-level Action-MPJPE plus an
-explicit note instead of a silently fabricated average.
+### Wrist-only by default, 21 joints with MANO
+
+The sample stores a wrist pose plus 15 joint rotations, not 21 joint positions.
+Turning those into fingertips needs the MANO mesh model
+(`v_template`/`shapedirs`/`J_regressor`/`weights`), which is licence-gated and
+not bundled. Two honest modes:
+
+* **default - wrist-only.** Joints 1..20 are written as `NaN`, the metadata says
+  `hand_joints: "wrist_only"`, and the evaluation reports
+  `referenced joints: 4.7 %` plus a note. You get a wrist-level Action-MPJPE
+  instead of a silently fabricated average.
+* **21 joints - with MANO.** Convert your licensed pickle once
+  (`python scripts/convert_mano.py --input MANO_RIGHT.pkl ...`), then:
+
+  ```bash
+  MANO_MODEL=weights/mano make sample
+  ```
+
+  `hand_xyz_world` then carries all 21 joints from numpy forward kinematics
+  (`hand/mano_model.py`: shape blend shapes, pose blend shapes, linear blend
+  skinning, the standard 21-landmark mapping), the wrist stays exactly where the
+  dataset put it, and missing frames stay missing. A right-hand model is enough:
+  the left is mirrored and `mano_mirrored` is recorded.
+
+  No MANO model at hand? `python scripts/make_synthetic_mano.py` fabricates a
+  structural stand-in so the same code path can be exercised end to end - its
+  output lives under `*_synthetic`, and any metric computed from it is
+  meaningless by construction.
 
 `data/*` is git-ignored: the sample dataset and everything derived from it stay
 on disk and out of the repository.
@@ -135,10 +156,33 @@ the whole orchestration, the artefact contract, the stitcher and the evaluation
 can be run and tested on a laptop. Every artefact it produces is marked
 `backend_mode: mock` in its metadata.
 
-What still has to be written on the GPU server is one function per real runner -
-`run_model()` - which calls the backend's own inference API. They raise
-`NotImplementedError` with the exact checkout/weights/device instead of
-pretending to have run.
+The real runners are written against each backend's own API. The part that can
+be verified without a GPU - turning model output into pipeline artefacts - lives
+in the package and is unit-tested:
+
+| Runner | Calls | Conversion (tested) |
+| --- | --- | --- |
+| `wilor_runner.py` | `wilor.models.load_wilor` + detector | `detection/wilor.py::detections_from_predictions`, `build_raw_detection_arrays` |
+| `hawor_runner.py` | `hawor_motion_estimation` -> `hawor_slam` -> `hawor_infiller` -> `run_mano` | `hand/hawor.py::hawor_tracks_from_detection`, `hand_windows_from_joints` |
+| `vggt_runner.py` | `VGGT.from_pretrained` + `pose_encoding_to_extri_intri` | `camera/vggt_omega.py::camera_window_from_output`, `scale_intrinsics` |
+
+Two findings from reading HaWoR's source, both load-bearing:
+
+* **Our tracker drives HaWoR.** HaWoR's demo starts at
+  `detect_track(imgfiles, thresh=0.2)`; this project replaces exactly that with
+  the conservative tracker of Phase 1 by writing its decision into the
+  `model_tracks.npy` structure `hawor_motion_estimation` reads. HaWoR then
+  reconstructs only the frames we kept.
+* **HaWoR's infiller needs its own SLAM.** `hawor_infiller` reads
+  `SLAM/hawor_slam_w_scale_*.npz` and emits hands in *HaWoR's SLAM world frame*,
+  so the runner calls `hawor_slam` as a coordinate carrier and converts the
+  hands back into **camera space** before Phase 3. VGGT-Omega still owns the
+  metric world trajectory - the win is a metric camera, not necessarily a
+  cheaper Phase 2.
+
+What remains for a real run is the backend call itself: it needs the checkout,
+the weights and a GPU. Every runner reports `--check` as JSON and raises with
+the exact missing piece instead of writing an empty artefact.
 
 ## GPU server
 

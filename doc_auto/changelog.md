@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-09-23 18:05 (+08:00) - MANO forward kinematics, backend runners written
+
+* `hand/mano_model.py`: numpy MANO forward kinematics (shape blend shapes, pose
+  blend shapes, kinematic tree, linear blend skinning) plus the 21-landmark
+  mapping (16 MANO joints + 5 standard fingertip vertices) into this project's
+  joint convention, model loading from `.npz`/`.pkl`, right-to-left mirroring
+  (mesh *and* pose conjugation) and a topology sanity check. Tested against a
+  synthetic model with the same structure: 13 tests pin the mapping slot by
+  slot, per-finger isolation of local rotations, root placement, shape scaling
+  and mirroring.
+* `datasets/hot3d_gt.py` gained an optional MANO model: with one, the HOT3D
+  reference becomes a full 21-joint reference (`hand_joints: mano_fk`), with the
+  wrist still placed exactly where the dataset put it; without one it stays
+  wrist-only. Verified on episode 0: 21 joints per valid hand-frame, exact wrist,
+  stable bone lengths, landmarks projected onto the real hands.
+* `scripts/convert_mano.py` (official pickle -> `.npz`, needs chumpy in the HaWoR
+  env) and `scripts/make_synthetic_mano.py` (clearly-labelled stand-in for
+  plumbing runs; `--mano-model` wiring in `scripts/import_lerobot.py` and
+  `scripts/demo_hot3d_sample.sh`).
+* Backend runners are now written against the real APIs, with every conversion
+  moved into the package and unit-tested:
+  `detection/wilor.py::detections_from_predictions` / `build_raw_detection_arrays`,
+  `hand/hawor.py::hawor_tracks_from_detection` / `hand_windows_from_joints`,
+  `camera/vggt_omega.py::camera_window_from_output`, plus VGGT pose-encoding
+  decoding with intrinsics rescaled to the depth grid.
+* Two load-bearing findings recorded in the docs: our conservative tracker now
+  drives HaWoR through its `model_tracks.npy` seam (replacing `thresh=0.2`), and
+  `hawor_infiller` hard-depends on HaWoR's own SLAM output (hands come back in
+  its world frame and are converted to camera space by the runner).
+* Test suite: **239 passed** (~12 s).
+
 ## 2026-09-23 17:36 (+08:00) - HOT3D sample bridge, real-data viewer, wrist-level evaluation
 
 * `datasets/lerobot.py`: a LeRobot v3 reader (info/tasks/episode metadata,

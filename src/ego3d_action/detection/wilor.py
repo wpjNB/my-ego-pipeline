@@ -130,6 +130,113 @@ def load_raw_detections(path: str | Path) -> list[list[RawDetection]]:
     return raw_detections_from_arrays(load_npz(path, required=("boxes", "confidence")))
 
 
+def build_raw_detection_arrays(
+    frames: Sequence[Sequence[RawDetection]],
+    *,
+    frame_ids: Sequence[int] | None = None,
+    num_frames: int | None = None,
+) -> dict[str, np.ndarray]:
+    """Pack detector output into the ``boxes/confidence/count`` artefact.
+
+    This is the conversion the runner uses: whatever shape WiLoR's API returns,
+    it ends up as compacted per-frame candidate slots plus an explicit
+    ``count``, so "no detection in this frame" is representable without a
+    zero-confidence placeholder box. An empty detection list is legal as long as
+    ``num_frames`` says how long the clip is - "no hands anywhere" is a real
+    outcome, not an error.
+
+    Raises:
+        StageIOError: when frames do not cover ``num_frames``.
+    """
+    ids = list(frame_ids) if frame_ids is not None else list(range(len(frames)))
+    total = num_frames if num_frames is not None else (max(ids) + 1 if ids else 0)
+    if total <= 0:
+        raise StageIOError("cannot build detection arrays for an empty clip")
+    if len(ids) != len(frames):
+        raise StageIOError(f"{len(ids)} frame ids for {len(frames)} detection lists")
+
+    slots = max(1, max((len(detections) for detections in frames), default=1))
+    boxes = np.zeros((total, slots, 4), dtype=np.float64)
+    confidence = np.zeros((total, slots), dtype=np.float64)
+    right_score = np.zeros((total, slots), dtype=np.float64)
+    left_score = np.zeros((total, slots), dtype=np.float64)
+    count = np.zeros(total, dtype=np.int64)
+    for frame_id, detections in zip(ids, frames, strict=False):
+        if not 0 <= frame_id < total:
+            raise StageIOError(f"frame id {frame_id} is outside [0, {total})")
+        count[frame_id] = len(detections)
+        for slot, detection in enumerate(detections):
+            boxes[frame_id, slot] = np.asarray(detection.bbox, dtype=np.float64)
+            confidence[frame_id, slot] = float(detection.confidence)
+            if detection.right_score:
+                right_score[frame_id, slot] = float(detection.right_score)
+            if detection.left_score:
+                left_score[frame_id, slot] = float(detection.left_score)
+    return {
+        "boxes": boxes,
+        "confidence": confidence,
+        "right_score": right_score,
+        "left_score": left_score,
+        "count": count,
+    }
+
+
+def detections_from_predictions(predictions: object, *, frame: int) -> list[RawDetection]:
+    """Convert one frame of WiLoR output into :class:`RawDetection` records.
+
+    WiLoR returns boxes, scores and left/right scores. The conversion is
+    forgiving about field names (``boxes``/``pred_boxes``,
+    ``scores``/``conf``/``pred_scores``, ``left``/``right``) but never guesses:
+    an unrecognised layout raises with the keys it actually saw, so a backend
+    upgrade fails loudly instead of producing empty detections.
+
+    Raises:
+        NotImplementedError: the output layout is not recognised.
+    """
+
+    def pick(*names: str) -> object | None:
+        for name in names:
+            if isinstance(predictions, dict) and name in predictions:
+                return predictions[name]
+            if hasattr(predictions, name):
+                return getattr(predictions, name)
+        return None
+
+    boxes = pick("boxes", "pred_boxes", "det_boxes")
+    scores = pick("scores", "conf", "pred_scores", "box_scores")
+    if boxes is None or scores is None:
+        available = (
+            sorted(predictions.keys()) if isinstance(predictions, dict) else dir(predictions)
+        )
+        raise NotImplementedError(
+            "cannot map WiLoR output to detections: expected box and score fields. "
+            f"Available: {available}"
+        )
+    left = pick("left", "left_scores", "is_left")
+    right = pick("right", "right_scores", "is_right")
+    boxes_array = np.asarray(boxes, dtype=np.float64).reshape(-1, 4)
+    scores_array = np.asarray(scores, dtype=np.float64).reshape(-1)
+    left_array = (
+        np.asarray(left, dtype=np.float64).reshape(-1)
+        if left is not None
+        else np.zeros_like(scores_array)
+    )
+    right_array = (
+        np.asarray(right, dtype=np.float64).reshape(-1)
+        if right is not None
+        else np.zeros_like(scores_array)
+    )
+    return [
+        RawDetection(
+            bbox=box,
+            confidence=float(score),
+            left_score=float(left_array[index]) if index < left_array.size else 0.0,
+            right_score=float(right_array[index]) if index < right_array.size else 0.0,
+        )
+        for index, (box, score) in enumerate(zip(boxes_array, scores_array, strict=False))
+    ]
+
+
 def track_clip(
     frame_detections: Sequence[Sequence[RawDetection]],
     *,

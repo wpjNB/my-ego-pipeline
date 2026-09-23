@@ -12,6 +12,7 @@ paths:
   outputs: outputs
   hot3d_root: data/hot3d
   lerobot_root: data/samples/lerobot_v3
+  mano_model: null         # e.g. weights/mano (see scripts/convert_mano.py)
   backends: backends
 
 backends:

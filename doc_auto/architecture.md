@@ -28,6 +28,40 @@ Two decisions worth knowing:
   meaningful number plus an explicit `referenced joints: x %` line instead of a
   silently fabricated average.
 
+## MANO forward kinematics
+
+``hand/mano_model.py`` implements the standard SMPL-family pipeline in numpy:
+shape blend shapes, pose blend shapes, the kinematic tree, linear blend
+skinning, and the 21-landmark mapping (16 MANO joints + the five standard
+fingertip vertices) into this project's joint convention. Given a MANO model,
+``datasets/hot3d_gt.py`` produces a full 21-joint reference; the wrist is placed
+exactly where the dataset says it is, so the 21-joint reference stays consistent
+with the wrist-only one it replaces.
+
+The asset itself is licence-gated and absent here, so the module is exercised
+against a synthetic model with the same structure
+(``testing/synthetic.py::make_synthetic_mano_model``): identity pose reproduces
+the template, a local rotation moves only its own finger, shape parameters scale
+the hand, the root rotation rotates everything, and the landmark mapping is
+pinned slot by slot. ``scripts/convert_mano.py`` converts the official pickle to
+``.npz`` (needs ``chumpy``, i.e. the HaWoR env); ``scripts/make_synthetic_mano.py``
+fabricates the stand-in for plumbing runs.
+
+## Backend seam
+
+| Step | Where | Verified |
+| --- | --- | --- |
+| our tracking -> HaWoR ``model_tracks.npy`` | ``hand/hawor.py::hawor_tracks_from_detection`` | yes (unit tests) |
+| model output -> detection artefact | ``detection/wilor.py`` | yes |
+| model output -> camera window | ``camera/vggt_omega.py::camera_window_from_output`` | yes |
+| HaWoR 21 joints -> 16/8 window files | ``hand/hawor.py::hand_windows_from_joints`` | yes |
+| the backend call itself | ``backends/*_runner.py::run_model`` | needs the GPU server |
+
+HaWoR's infiller hard-depends on its own SLAM output and emits hands in HaWoR's
+SLAM world frame; the runner therefore converts them back to camera space with
+HaWoR's own poses, keeping VGGT-Omega the sole authority on the metric world
+trajectory.
+
 ## Backend invocation
 
 The orchestrator never imports a model. Each backend is a standalone runner

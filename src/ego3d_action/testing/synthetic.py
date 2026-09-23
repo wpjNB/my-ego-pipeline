@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import numpy as np
 from scipy.spatial.transform import Rotation
+from pathlib import Path
 
 from ..camera.window import CameraWindow, WindowRange
+from ..hand.mano_model import MANO_FINGERTIP_VERTICES, ManoModel
 from ..geometry.sim3 import Sim3
 from ..geometry.transforms import invert_rigid, project_points
 
@@ -359,3 +361,116 @@ def synthetic_detections(
         "left_score": left_score,
         "count": count,
     }
+
+
+def synthetic_mano_joints() -> Array:
+    """A plausible MANO skeleton: wrist at the origin, five chains along +x."""
+    directions = {
+        "index": np.array([1.0, 0.35, 0.05]),
+        "middle": np.array([1.0, 0.10, 0.0]),
+        "pinky": np.array([1.0, -0.35, 0.0]),
+        "ring": np.array([1.0, -0.12, 0.02]),
+        "thumb": np.array([1.0, 0.55, -0.45]),
+    }
+    joints = np.zeros((16, 3), dtype=np.float64)
+    for finger, (a, b, c) in (("index", (1, 2, 3)), ("middle", (4, 5, 6)), ("pinky", (7, 8, 9)), ("ring", (10, 11, 12)), ("thumb", (13, 14, 15))):
+        direction = directions[finger] / np.linalg.norm(directions[finger])
+        for step, index in enumerate((a, b, c), start=1):
+            joints[index] = direction * (0.03 * step)
+    return joints
+
+
+def mano_fingertip_positions(joints: Array | None = None) -> Array:
+    """Fingertip positions in :data:`MANO_FINGERTIP_VERTICES` order."""
+    base = synthetic_mano_joints() if joints is None else np.asarray(joints, dtype=np.float64)
+    chain = {
+        "thumb": (13, 14, 15),
+        "index": (1, 2, 3),
+        "middle": (4, 5, 6),
+        "ring": (10, 11, 12),
+        "pinky": (7, 8, 9),
+    }
+    out = np.zeros((5, 3), dtype=np.float64)
+    for slot, finger in enumerate(("thumb", "index", "middle", "ring", "pinky")):
+        _, middle, dip = chain[finger]
+        direction = base[dip] - base[middle]
+        direction = direction / max(np.linalg.norm(direction), 1e-9)
+        out[slot] = base[dip] + direction * 0.03
+    return out
+
+
+def make_synthetic_mano_model(
+    *,
+    num_vertices: int = 800,
+    shape_scale: float = 0.0,
+    pose_dirs_scale: float = 0.0,
+) -> ManoModel:
+    """A tiny MANO-shaped model with the same structure as the real asset.
+
+    Every joint is a vertex (``J_regressor`` is a selection matrix) and every
+    vertex is weighted to exactly one joint, so the forward kinematics has an
+    exact, checkable answer - which is what makes it useful as a test fixture.
+    """
+    joints = synthetic_mano_joints()
+    tips = mano_fingertip_positions(joints)
+
+    template = np.zeros((num_vertices, 3), dtype=np.float64)
+    template[:16] = joints
+    for slot, finger in enumerate(("thumb", "index", "middle", "ring", "pinky")):
+        template[MANO_FINGERTIP_VERTICES[finger]] = tips[slot]
+    filler = np.arange(num_vertices)
+    remainder = (filler >= 16) & ~np.isin(filler, list(MANO_FINGERTIP_VERTICES.values()))
+    template[remainder] = joints[0] + 0.01 * np.stack(
+        [np.cos(0.1 * filler[remainder]), np.sin(0.1 * filler[remainder]), np.zeros(remainder.sum())],
+        axis=-1,
+    )
+
+    regressor = np.zeros((16, num_vertices), dtype=np.float64)
+    for index in range(16):
+        regressor[index, index] = 1.0
+
+    weights = np.zeros((num_vertices, 16), dtype=np.float64)
+    weights[:, 0] = 1.0
+    for index in range(16):
+        weights[index] = 0.0
+        weights[index, index] = 1.0
+    tip_to_dip = {"thumb": 15, "index": 3, "middle": 6, "ring": 12, "pinky": 9}
+    for finger, vertex in MANO_FINGERTIP_VERTICES.items():
+        weights[vertex] = 0.0
+        weights[vertex, tip_to_dip[finger]] = 1.0
+
+    shapedirs = np.zeros((num_vertices, 3, 10), dtype=np.float64)
+    if shape_scale:
+        shapedirs[:, :, 0] = template * shape_scale
+    posedirs = np.zeros((num_vertices, 3, 9 * 15), dtype=np.float64)
+    if pose_dirs_scale:
+        posedirs[:16, :, 0] = pose_dirs_scale
+
+    faces = np.array([[0, 1, 2], [2, 3, 4]], dtype=np.int64)
+    return ManoModel(
+        v_template=template,
+        shapedirs=shapedirs,
+        j_regressor=regressor,
+        weights=weights,
+        posedirs=posedirs,
+        faces=faces,
+        hands="right",
+        source="synthetic",
+    )
+
+
+def write_synthetic_mano_npz(path: str | Path, **kwargs: object) -> Path:
+    """Persist a synthetic MANO model as the ``.npz`` the loader expects."""
+    model = make_synthetic_mano_model(**kwargs)  # type: ignore[arg-type]
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(
+        target,
+        v_template=model.v_template,
+        shapedirs=model.shapedirs,
+        j_regressor=model.j_regressor,
+        weights=model.weights,
+        posedirs=model.posedirs,
+        f=model.faces,
+    )
+    return target

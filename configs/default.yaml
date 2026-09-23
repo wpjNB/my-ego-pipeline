@@ -12,6 +12,7 @@ paths:
   outputs: outputs
   backends: backends
   lerobot_root: data/samples/lerobot_v3
+  mano_model: null         # e.g. weights/mano (see scripts/convert_mano.py)
 
 backends:
   mode: real               # real | mock  (mock = deterministic stand-in, never a model)

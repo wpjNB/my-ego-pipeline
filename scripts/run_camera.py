@@ -65,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
             third_party=third_party,
             weights_root=weights,
             out_dir=layout.camera_windows_dir,
+            frames_dir=layout.frames_dir,
             num_frames=num_frames,
             window=window,
             overlap=overlap,
