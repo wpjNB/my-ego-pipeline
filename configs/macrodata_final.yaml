@@ -1,0 +1,61 @@
+# The final configuration reported in the reference blog post.
+# This is the single authoritative parameter table of the project.
+runtime:
+  device: auto             # -> cuda:0 on the server, cpu on a laptop
+  seed: 0
+  log_level: INFO
+
+paths:
+  data_root: data
+  third_party: third_party
+  weights: weights
+  outputs: outputs
+
+preprocess:
+  image_format: jpg
+  jpeg_quality: 2
+
+detection:
+  min_confidence: 0.75     # WiLoR detector + conservative tracking
+  max_gap: 4
+  iou_threshold: 0.20
+
+hand:
+  window: 16               # HaWoR: 16 frames
+  overlap: 8               # 8-frame overlap
+  batch_size: 4
+
+camera:
+  resolution: 416          # VGGT-Omega: 416 px
+  window: 200              # 200 frames
+  overlap: 40              # 40-frame overlap
+  checkpoint: VGGT-Omega-1B-416-Reproduction
+  use_depth_confidence: true
+
+stitch:
+  pixel_stride: 8
+  min_depth: 0.001
+  max_depth: null
+  depth_confidence_floor: null
+  inlier_threshold: null
+  ransac_iterations: 128
+  blend: true              # linear blending, never concatenation
+  normalize_world: true
+
+refinement:
+  camera_filter_passes: 1  # 3-frame binomial translation filter
+  bone_scale_max_correction: 0.035   # <= 3.5 % bone/depth correction
+  bone_scale_reference: median
+  wrist_depth_lambda: 0.2  # wrist depth optimisation
+  wrist_depth_max_change: null
+
+evaluation:
+  dataset: hot3d
+  chunk_seconds: 1.0
+  strict_artefacts: true
+
+visualization:
+  enabled: true
+  fps: null
+  draw_bbox: true
+  draw_confidence: true

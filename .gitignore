@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# Local environments / caches
+.cache/
+.venv/
+envs/
+
+# Git metadata lives here because the workspace root ships a read-only .git
+# mount point (see doc_auto/environments.md); never commit the store itself.
+.gitstore/
+
+# Data, weights and third-party checkouts are never versioned
+data/*
+!data/.gitkeep
+weights/*
+!weights/.gitkeep
+third_party/*
+!third_party/README.md
+outputs/
+
+# Media
+*.mp4
+*.avi
+*.mov

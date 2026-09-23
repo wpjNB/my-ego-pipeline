@@ -1,0 +1,61 @@
+# Neutral defaults: every parameter that the blog post pins down is left at its
+# documented value, everything else is deliberately conservative.
+runtime:
+  device: auto
+  seed: 0
+  log_level: INFO
+
+paths:
+  data_root: data
+  third_party: third_party
+  weights: weights
+  outputs: outputs
+
+preprocess:
+  image_format: jpg
+  jpeg_quality: 2
+
+detection:
+  min_confidence: 0.75     # high-confidence anchor threshold
+  max_gap: 4               # same-side gap that may be recovered
+  iou_threshold: 0.20      # required IoU against the interpolated anchor box
+
+hand:
+  window: 16
+  overlap: 8
+  batch_size: 4            # backend batch size; lower it if VRAM is tight
+
+camera:
+  resolution: 416
+  window: 200
+  overlap: 40
+  checkpoint: VGGT-Omega-1B-416-Reproduction
+  use_depth_confidence: true
+
+stitch:
+  pixel_stride: 8          # depth subsampling for correspondences
+  min_depth: 0.001
+  max_depth: null
+  depth_confidence_floor: null
+  inlier_threshold: null   # null -> derived from the residual distribution
+  ransac_iterations: 128
+  blend: true
+  normalize_world: true
+
+refinement:
+  camera_filter_passes: 1
+  bone_scale_max_correction: 0.035
+  bone_scale_reference: median
+  wrist_depth_lambda: 0.2
+  wrist_depth_max_change: null
+
+evaluation:
+  dataset: hot3d
+  chunk_seconds: 1.0
+  strict_artefacts: true
+
+visualization:
+  enabled: true
+  fps: null                # null -> source fps
+  draw_bbox: true
+  draw_confidence: true

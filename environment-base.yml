@@ -1,0 +1,23 @@
+# Orchestrator environment: file IPC, geometry, evaluation, visualisation.
+# It never imports a model backend, which is why it can be created on a
+# CPU-only laptop.
+#
+#   conda env create -f environment-base.yml
+#   conda activate ego3d_base
+#   pip install -e . --no-build-isolation
+#   conda env create -f environment-base.yml
+#   conda activate ego3d_base
+#   python -m pip install --no-build-isolation -e .
+name: ego3d_base
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy>=1.24
+  - scipy>=1.10
+  - pyyaml>=6.0
+  - tqdm>=4.65
+  - matplotlib>=3.7
+  - opencv>=4.8
+  - pytest>=7.4
+  - pip

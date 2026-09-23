@@ -1,0 +1,29 @@
+# VGGT-Omega camera backend (Phase 3).
+#
+#   conda env create -f environment-vggt.yml
+#   git clone https://github.com/facebookresearch/vggt third_party/VGGT-Omega
+#   mkdir -p weights/vggt-omega
+#   # place VGGT-Omega-1B-416-Reproduction in weights/vggt-omega
+#
+# First version deliberately uses the official 416 *reproduction* checkpoint
+# rather than resizing the 512 checkpoint down to 416.
+name: ego3d_vggt
+channels:
+  - defaults
+  - pytorch
+  - nvidia
+dependencies:
+  - python=3.11
+  - pytorch>=2.4
+  - torchvision
+  - pytorch-cuda=12.1
+  - numpy>=1.24
+  - scipy
+  - pyyaml
+  - tqdm
+  - opencv
+  - pillow
+  - pip
+  - pip:
+      - huggingface_hub
+      - einops

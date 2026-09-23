@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ego3d-action"
+version = "0.1.0"
+description = "Egocentric RGB -> metric 3D hand-action pipeline (WiLoR + HaWoR + VGGT-Omega + depth-derived Sim(3))"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pyyaml>=6.0",
+    "tqdm>=4.65",
+]
+
+[project.optional-dependencies]
+io = ["opencv-python-headless>=4.8"]
+viz = ["matplotlib>=3.7"]
+dev = ["pytest>=7.4"]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+

@@ -1,0 +1,29 @@
+# WiLoR detection backend (Phase 1).
+#
+#   conda env create -f environment-wilor.yml
+#
+# This environment is intentionally separate: WiLoR pins an older torch/CUDA
+# stack, and the orchestrator must stay importable without it.
+#
+# After creating it, clone the backend and fetch its weights:
+#   git clone https://github.com/rolpotamias/WiLoR third_party/WiLoR
+#   mkdir -p weights/wilor && <download the WiLoR checkpoint into it>
+name: ego3d_wilor
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - torch==2.1.2
+      - torchvision==0.16.2
+      - opencv-python
+      - numpy<2
+      - scipy
+      - pyyaml
+      - tqdm
+      - ultralytics
+# NOTE on the GPU server: replace the pip torch pins above with the CUDA build
+# that matches the driver, e.g. `pip install torch==2.1.2 --index-url
+# https://download.pytorch.org/whl/cu118`, or conda install pytorch with the
+# matching cudatoolkit.

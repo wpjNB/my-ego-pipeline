@@ -1,0 +1,35 @@
+# HaWoR hand reconstruction backend (Phase 2).
+#
+# The upstream README targets Python 3.10 / PyTorch 1.13 / CUDA 11.7 and ships
+# legacy components (DROID-SLAM, Metric3D). This project does NOT use those two
+# (VGGT-Omega replaces them) but keeps the pinned stack so HaWoR behaves as
+# upstream, which is what makes the "+VGGT" ablation row meaningful.
+#
+#   conda env create -f environment-hawor.yml
+#   git clone https://github.com/ThunderVVV/HaWoR third_party/HaWoR
+#   mkdir -p weights/hawor && <download the HaWoR + MANO checkpoints into it>
+name: ego3d_hawor
+channels:
+  - defaults
+  - pytorch
+  - nvidia
+dependencies:
+  - python=3.10
+  - pytorch=1.13.1
+  - torchvision=0.14.1
+  - torchaudio=0.13.1
+  - cudatoolkit=11.7
+  - numpy<2
+  - scipy
+  - pyyaml
+  - tqdm
+  - opencv
+  - pip
+  - pip:
+      - chumpy
+      - smplx
+      - mmpose
+      - roma
+# DROID-SLAM and Metric3D are deliberately NOT listed: the reference pipeline
+# replaces "DROID-SLAM + Metric3D" with VGGT-Omega, and vendoring both designs
+# would entangle two mutually exclusive camera-reconstruction stacks.

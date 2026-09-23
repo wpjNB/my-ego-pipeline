@@ -1,0 +1,1209 @@
+https://macrodata.co/blog/turning-egocentric-video-into-3d-hand-actions 我打算复现真个完整流程的代码工程
+
+可以。既然你的目标是把 Macrodata 这篇文章的完整 3D hand-action pipeline 真正工程化复现出来，我建议不要把它理解成“跑一下 HaWoR + VGGT-Omega”，而是自己搭一个统一的 pipeline，把文章里的 6 个步骤、数据中间产物、坐标系、窗口拼接、后处理、评测全部实现出来。
+
+我刚重新核对了文章和目前公开的官方代码。Macrodata 的最终系统是：
+
+Egocentric RGB
+      │
+      ├──────────────────────┐
+      │                      │
+      ▼                      ▼
+ WiLoR hand detection   VGGT-Omega camera
+      │                      │
+ conservative tracking       │
+      ▼                      ▼
+ HaWoR 3D hand          window inference
+      │                      │
+      │                depth-based Sim(3)
+      │                window stitching
+      │                      │
+      └──────────┬───────────┘
+                 ▼
+           World-space fusion
+                 │
+                 ▼
+         trajectory post-process
+                 │
+                 ▼
+       21-joint metric 3D hand
+
+文章明确给出的最终配置是 WiLoR → HaWoR 16-frame/8-overlap，VGGT-Omega 416 px / 200-frame / 40-overlap，depth-derived Sim(3)，linear blending，3-frame camera translation filter，≤3.5% bone/depth correction，wrist-depth optimization λ=0.2。
+
+一、先确定我们的工程目标
+
+不要一开始就追求文章的最终 52.04 mm。
+
+我建议定义三个里程碑：
+
+Level 1：Pipeline 跑通
+video.mp4
+   ↓
+21 × 3 hand trajectory
+   ↓
+可视化视频
+
+要求：
+
+左右手正确
+手在 camera/world 坐标系中连续
+相机运动能够被消除
+能保存中间结果
+Level 2：算法复现
+
+逐项复现：
+
+WiLoR tracking
+HaWoR temporal reconstruction
+VGGT-Omega window inference
+Sim(3) stitching
+world fusion
+camera filtering
+bone/depth correction
+wrist depth optimization
+
+然后每加入一个模块，都做 ablation。
+
+Level 3：结果复现
+
+拿 HOT3D 按文章的 Action MPJPE 评测方法测试：
+
+Action MPJPE
+Coverage
+FPS
+
+文章最终报告的是：
+
+52.0435 mm
+81.23%
+15.53 FPS
+
+原始 HaWoR reference 则是：
+
+59.1198 mm
+87.11%
+3.34 FPS
+
+这些是 Macrodata 在自己的十个 HOT3D episodes 上得到的结果，不应该把它们直接当成你自己的复现保证值。
+
+二、最重要的一点：不要直接把 HaWoR 项目当成最终工程
+
+这是你这个项目最容易走偏的地方。
+
+官方 HaWoR 本身是：
+
+WiLoR detector
+      ↓
+HaWoR hand reconstruction
+      ↓
+masked DROID-SLAM
+      ↓
+Metric3D
+      ↓
+world-space
+      ↓
+infiller
+
+官方 demo 的代码确实直接调用：
+
+detect_track_video()
+hawor_motion_estimation()
+hawor_slam()
+hawor_infiller()
+
+而且官方安装还需要 DROID-SLAM、Metric3D、HaWoR 权重等。
+
+但是 Macrodata 最终方案已经把：
+
+DROID-SLAM + Metric3D
+
+换成了：
+
+VGGT-Omega
+
+所以最合理的工程不是：
+
+fork HaWoR
+疯狂改代码
+
+而是：
+
+自己建立一个 orchestration layer
+        │
+        ├── WiLoR adapter
+        ├── HaWoR adapter
+        ├── VGGT-Omega adapter
+        ├── geometry module
+        ├── fusion module
+        ├── refinement module
+        └── evaluation module
+
+HaWoR、VGGT-Omega 都作为外部模型 backend。
+
+三、我建议你的最终项目目录直接这样设计
+ego3d_action/
+│
+├── README.md
+├── pyproject.toml
+├── environment.yml
+├── configs/
+│   ├── default.yaml
+│   ├── macrodada_final.yaml
+│   └── hot3d.yaml
+│
+├── scripts/
+│   ├── run_pipeline.py
+│   ├── run_detection.py
+│   ├── run_hand.py
+│   ├── run_camera.py
+│   ├── run_stitch.py
+│   ├── run_fusion.py
+│   ├── run_refine.py
+│   └── evaluate_hot3d.py
+│
+├── src/
+│   └── ego3d_action/
+│       │
+│       ├── io/
+│       │   ├── video.py
+│       │   ├── frames.py
+│       │   └── serialization.py
+│       │
+│       ├── detection/
+│       │   ├── wilor.py
+│       │   ├── tracker.py
+│       │   └── handedness.py
+│       │
+│       ├── hand/
+│       │   ├── hawor.py
+│       │   ├── temporal_blend.py
+│       │   ├── mano.py
+│       │   └── representation.py
+│       │
+│       ├── camera/
+│       │   ├── vggt_omega.py
+│       │   ├── window.py
+│       │   ├── depth.py
+│       │   └── camera_pose.py
+│       │
+│       ├── geometry/
+│       │   ├── sim3.py
+│       │   ├── umeyama.py
+│       │   ├── point_cloud.py
+│       │   └── transforms.py
+│       │
+│       ├── fusion/
+│       │   ├── world_fusion.py
+│       │   └── trajectory.py
+│       │
+│       ├── refinement/
+│       │   ├── camera_filter.py
+│       │   ├── bone_scale.py
+│       │   └── wrist_depth.py
+│       │
+│       ├── evaluation/
+│       │   ├── action_mpjpe.py
+│       │   ├── coverage.py
+│       │   └── benchmark.py
+│       │
+│       └── visualization/
+│           ├── render_hand.py
+│           ├── render_camera.py
+│           └── render_world.py
+│
+├── third_party/
+│   ├── HaWoR/
+│   ├── VGGT-Omega/
+│   └── WiLoR/
+│
+├── weights/
+│   ├── wilor/
+│   ├── hawor/
+│   └── vggt_omega/
+│
+├── data/
+│   ├── raw/
+│   ├── frames/
+│   ├── detection/
+│   ├── hand/
+│   ├── camera/
+│   ├── stitched/
+│   ├── trajectory/
+│   └── evaluation/
+│
+└── tests/
+    ├── test_sim3.py
+    ├── test_transforms.py
+    ├── test_blending.py
+    └── test_wrist_depth.py
+
+这样后面你甚至可以把它扩展成你之前说的：
+
+Ego4D
+ ↓
+3D hand action
+ ↓
+subtask segmentation
+ ↓
+VLA dataset
+
+而不用推倒重来。
+
+四、整个工程的核心数据流
+
+我建议你不要让模块之间直接传 Python 临时对象。
+
+每个 stage 都落盘。
+
+比如一条：
+
+data/raw/demo01.mp4
+
+经过处理：
+
+data/
+└── demo01/
+    │
+    ├── frames/
+    │   ├── 000000.jpg
+    │   ├── 000001.jpg
+    │   └── ...
+    │
+    ├── detection/
+    │   ├── boxes.npy
+    │   ├── confidence.npy
+    │   ├── handedness.npy
+    │   ├── track_ids.npy
+    │   └── valid.npy
+    │
+    ├── hand/
+    │   ├── camera_space_mano.npz
+    │   ├── joints_camera.npy
+    │   ├── root_rot.npy
+    │   └── hand_valid.npy
+    │
+    ├── camera/
+    │   ├── windows/
+    │   │   ├── 000000_000199.npz
+    │   │   ├── 000160_000359.npz
+    │   │   └── ...
+    │   └── stitched_camera.npz
+    │
+    ├── stitched/
+    │   └── sim3_transforms.npy
+    │
+    ├── trajectory/
+    │   ├── world_joints_raw.npy
+    │   ├── world_joints_refined.npy
+    │   ├── camera_pose.npy
+    │   └── metadata.json
+    │
+    └── visualization/
+        ├── hand_overlay.mp4
+        ├── camera_world.mp4
+        └── trajectory.mp4
+
+这个设计特别重要。
+
+否则后面你会遇到：
+
+“这个 3D hand 是 HaWoR 原始的还是后处理后的？”
+“Sim(3) 是第几个 window 算出来的？”
+“这个错误到底来自 hand 还是 camera？”
+
+你会非常难 debug。
+
+五、Stage 1：WiLoR Detection + Conservative Tracking
+
+这里不要照抄官方 HaWoR 的：
+
+detect_track(..., thresh=0.2)
+
+因为 Macrodata 最终方案采用了自己的 conservative tracking。
+
+文章的最终规则：
+
+high confidence:
+confidence >= 0.75
+
+只有出现：
+
+same-side gap <= 4 frames
+
+时，才允许尝试恢复低置信度检测。
+
+而且要求：
+
+interpolated-box IoU >= 0.20
+
+文章的 sweep 里，4-frame + IoU 0.20 是最后选择的配置。
+
+工程接口可以定义成：
+
+@dataclass
+class HandDetection:
+    frame_id: int
+    bbox: np.ndarray      # [x1, y1, x2, y2]
+    confidence: float
+    handedness: int       # 0 left, 1 right
+
+最后：
+
+tracks: dict[int, list[HandDetection]]
+
+输出：
+
+left_track
+right_track
+
+并且明确保存：
+
+valid[t, hand]
+
+不要为了连续性强行补 3D pose。
+
+文章最终系统的 missing poses 依旧保持 missing；它没有把缺失帧偷偷生成出来。
+
+六、Stage 2：HaWoR
+
+输入：
+
+video
++
+left/right tracks
+
+然后按照：
+
+window = 16 frames
+overlap = 8 frames
+
+跑 HaWoR。
+
+文章指出 HaWoR 的相邻窗口已经处于同一个 camera coordinate system，因此这里不需要 Sim(3)；只需要对重叠部分做 temporal blending。位置和 joint translation 可以线性插值，rotation 使用 spherical interpolation。
+
+也就是：
+
+Window A
+
+0 -------- 15
+      \
+       \
+        8 -------- 23
+        Window B
+
+共享：
+
+8 ... 15
+
+然后：
+
+$$ p_t= (1-\alpha)p_t^A+\alpha p_t^B $$
+
+旋转则：
+
+$$ R_t=\operatorname{SLERP}(R_t^A,R_t^B,\alpha) $$
+
+最终：
+
+joints_camera
+    shape = [T, 2, 21, 3]
+
+valid
+    shape = [T, 2]
+
+这里特别值得注意的是，文章实验得到 8-frame overlap 是最后采用的配置，但这个收益比 VGGT camera stitching 小很多。
+
+七、Stage 3：VGGT-Omega Camera Reconstruction
+
+这是整个项目的第二个核心。
+
+文章最终：
+
+resolution = 416
+window = 200
+overlap = 40
+
+因此：
+
+stride = 160
+
+例如 600 帧：
+
+Window 0:
+0 ~ 199
+
+Window 1:
+160 ~ 359
+
+Window 2:
+320 ~ 519
+
+Window 3:
+480 ~ 599
+
+每个 window 得到：
+
+camera pose
+depth
+intrinsics
+
+VGGT-Omega 官方当前代码可以直接返回 camera pose encoding、depth、depth confidence 等结果。
+
+八、这里有一个 2026 年 9 月之后你复现时必须注意的变化
+
+目前 VGGT-Omega 官方仓库已经在 2026-09-08 发布了额外训练的 checkpoint，并在 2026-09-10 发布了数据序列列表。现在官方提供：
+
+VGGT-Omega-1B-512
+VGGT-Omega-1B-416-Reproduction
+VGGT-Omega-1B-256-Text-Alignment
+
+其中新的：
+
+VGGT-Omega-1B-416-Reproduction
+
+是专门用于 benchmark reproduction 的 416-resolution checkpoint。
+
+所以我们现在做工程时，我建议：
+
+第一版：
+VGGT-Omega-1B-416-Reproduction
+
+而不要自己拿 512 checkpoint 再 resize 到 416。
+
+不过需要严谨区分：
+
+这是目前官方公开的 reproduction checkpoint，不等于 Macrodata 明确声明它就是他们博客实验中使用的 checkpoint。
+
+因此后面即使你的代码完全正确，也不能预先假定一定能得到 52.0435 mm。
+
+九、Stage 4：VGGT Window Stitching
+
+这是整个工程最值得你自己实现的一部分。
+
+比如：
+
+Window A
+       ┌──────────────┐
+       │              │
+0 ─────┼──────────────┼──── 199
+       │ overlap      │
+       └──────────────┘
+
+Window B
+                 ┌──────────────┐
+                 │              │
+       160 ──────┼──────────────┼──── 359
+
+A 和 B 对 overlap：
+
+160 ~ 199
+
+的场景产生不同的局部坐标系：
+
+$$ X_A $$
+
+和：
+
+$$ X_B $$
+
+我们需要求：
+
+$$ X_A=sRX_B+t $$
+
+即：
+
+$$ T_{B\rightarrow A}\in Sim(3) $$
+十、我建议单独做一个 Sim3 模块
+class Sim3:
+    scale: float
+    rotation: np.ndarray      # [3,3]
+    translation: np.ndarray   # [3]
+
+    def transform(self, points):
+        return self.scale * (points @ self.rotation.T) + self.translation
+
+核心：
+
+estimate_sim3(
+    src_points,
+    dst_points,
+    weights=None,
+)
+
+算法可以使用：
+
+weighted Umeyama
++
+RANSAC / robust correspondence filtering
+
+这里要明确：
+
+Macrodata 文章明确告诉了你“使用 depth-derived Sim(3)”以及结果，但没有公开一个叫 MacrodataPipeline 的官方完整 glue-code 仓库供你直接照搬。
+
+所以：
+
+Sim3 solver
+overlap correspondence
+depth correspondence filtering
+blending
+
+这些是我们需要自己实现的工程部分。
+
+十一、为什么这里要用 depth-derived Sim3
+
+不能简单使用：
+
+camera center
+
+文章的实验已经说明：
+
+depth-derived Sim(3)
+
+效果最好。
+
+最终：
+
+window A world
+        ↑
+     Sim(3)
+        ↑
+window B local
+
+然后将 B 的：
+
+camera pose
+depth-derived geometry
+
+统一到 A 的世界坐标系。
+
+相邻窗口继续这样做：
+
+W0
+ ↓
+W1
+ ↓
+W2
+ ↓
+W3
+
+最后：
+
+所有 camera poses
+
+都会落到：
+
+World-0
+
+这个统一坐标系。
+
+十二、Window blending 不能简单 concat
+
+错误写法：
+
+all_pose.extend(window_pose)
+
+正确：
+
+Window A:
+       A A A A A
+             ↓
+Window B:
+             B B B B B
+
+在 overlap：
+
+$$ 160\sim199 $$
+
+进行：
+
+$$ P_t=(1-\alpha_t)P_t^A+\alpha_tP_t^B $$
+
+这样：
+
+A──────╲
+        ╲
+         ╲
+B─────────
+
+变成连续轨迹。
+
+文章选择 40-frame overlap，并用 linear blending；实验显示 overlap 增大会持续降低 Action MPJPE，但也增加重复计算。
+
+十三、Stage 5：Hand + Camera → World
+
+这一步实际上非常简单，但坐标系一定要统一。
+
+HaWoR：
+
+$$ p^C_{t,h,j} $$
+
+VGGT：
+
+$$ R_t^{C\rightarrow W},t_t^{C\rightarrow W} $$
+
+于是：
+
+$$ p^W_{t,h,j} = R_t^{C\rightarrow W}p^C_{t,h,j} +t_t^{C\rightarrow W} $$
+
+文章明确使用第一帧 camera 作为 world frame。
+
+代码就是：
+
+world_joints = np.einsum(
+    "tij,thnj->thni",
+    camera_R,
+    camera_joints
+)
+
+world_joints += camera_t[:, None, None, :]
+
+其中：
+
+T × 2 × 21 × 3
+
+就变成你真正的：
+
+world-space metric hand action
+十四、Stage 6：Post-processing
+
+这里不要直接：
+
+GaussianSmooth(hand_xyz)
+
+这是文章明确证明效果不好的地方。
+
+例如：
+
+Raw                    53.7045 mm
+3-frame mean           54.0199 mm
+5-frame mean           54.6569 mm
+3-frame Gaussian       54.4218 mm
+
+虽然 acceleration error 下降了，但是 Action MPJPE 反而变差。
+
+所以最后只保留三种针对性处理。
+
+14.1 Camera translation 3-frame filter
+
+文章最后采用：
+
+3-frame binomial
+
+而不是宽窗口平滑。
+
+可以先实现：
+
+$$ t'_i = \frac14t_{i-1} + \frac12t_i + \frac14t_{i+1} $$
+
+边界单独处理。
+
+十五、Bone-scale correction
+
+HaWoR 的 MANO shape 在不同 frame 可能存在微小变化：
+
+frame 100:
+finger = 91.2 mm
+
+frame 101:
+finger = 94.0 mm
+
+frame 102:
+finger = 90.8 mm
+
+真实人的手不会这样明显变化。
+
+所以文章统计一个 clip-level mean bone length，然后控制修正幅度：
+
+≤ 3.5%
+
+而且：
+
+bone scale
++
+wrist depth
+
+要一起保持物理一致。
+
+文章最终实验：
+
+No correction              53.7045 mm
+3% bound                   52.2075 mm
+3.5% bound                 52.2199 mm
++ wrist acceleration       52.0859 mm
++ confidence weighting     52.0736 mm
+
+十六、Wrist Depth Optimization
+
+这个是最终工程最“算法”的一个模块。
+
+由于 monocular RGB：
+
+x / y projection
+
+通常比较好约束，
+
+但：
+
+z depth
+
+最容易错。
+
+文章最终不是把 wrist 随便平滑，而是：
+
+沿原始 camera ray 移动 wrist。
+
+也就是说：
+
+camera
+   \
+    \
+     ● original wrist
+      \
+       ● optimized wrist
+
+但：
+
+2D projection 不变
+
+因此不能把 wrist 在图像中横向移动。
+
+优化变量变成：
+
+$$ d_1,d_2,\ldots,d_T $$
+
+即每一帧 wrist depth。
+
+目标由两部分组成：
+
+$$ L(d) = L_{\text{stay-close}} + \lambda L_{\text{acc}} $$
+
+其中：
+
+λ = 0.2
+
+最终置信度还参与第一项权重。
+
+文章的具体配置是：
+
+confidence
+ ↓
+divide by track median
+ ↓
+clamp [0.5, 1.5]
+ ↓
+power 8
+
+然后高置信度 frame 更接近原始 HaWoR depth，低置信度 frame 可以被优化得更多。
+
+这个模块我建议单独写：
+
+src/ego3d_action/refinement/wrist_depth.py
+
+不要塞进 fusion。
+
+十七、最终的数据结构我建议固定下来
+
+最终不要只保存：
+
+xyz.npy
+
+而是：
+
+trajectory.npz
+
+包含：
+
+frames                    [T]
+timestamps                [T]
+
+hand_xyz_world             [T, 2, 21, 3]
+hand_xyz_camera            [T, 2, 21, 3]
+
+hand_valid                 [T, 2]
+hand_confidence            [T, 2]
+
+camera_R_c2w               [T, 3, 3]
+camera_t_c2w               [T, 3]
+camera_K                   [T, 3, 3]
+
+bbox                       [T, 2, 4]
+track_id                   [T, 2]
+
+mano_root_rot              [T, 2, 3, 3]
+mano_hand_pose             [T, 2, 15, 3, 3]
+mano_betas                 [T, 2, 10]
+
+postprocess_valid          [T, 2]
+
+再加：
+
+{
+    "fps": 30,
+    "world_frame": 0,
+    "hand_representation": "21_joints_metric_xyz",
+    "camera_convention": "c2w",
+    "units": "meter"
+}
+
+这样以后转换成 VLA 数据就非常方便。
+
+十八、还必须做一个 Debug Visualization
+
+我建议每个 stage 都生成视频。
+
+01_detection.mp4
+RGB
++
+left bbox
++
+right bbox
++
+confidence
++
+track ID
+02_hawor.mp4
+RGB
++
+3D hand projection
+03_camera.mp4
+world coordinate
++
+camera trajectory
+04_fusion.mp4
+camera
++
+left hand
++
+right hand
+05_refined.mp4
+raw trajectory
++
+refined trajectory
+06_final_world.mp4
+fixed world camera
++
+21-joint skeleton
+
+这比直接盯着 .npy 找 bug 有效很多。
+
+十九、评测模块也必须自己写
+
+Macrodata 并不是普通的：
+
+MPJPE(frame-by-frame)
+
+而是：
+
+Action MPJPE
+
+他们把 trajectory 切成：
+
+1 second action chunks
+
+每个 chunk 从 frame \(t\) 开始，把之后的一秒 trajectory 都转换到：
+
+camera at frame t
+
+的坐标系中。
+
+然后：
+
+$$ E_{\text{action}} = \operatorname{mean}_{(t,h)} \left[ \operatorname{mean}_{i,j} \left\| \hat p_{t,h,i,j}-p_{t,h,i,j} \right\|_2 \right] $$
+
+这里：
+
+h = left/right hand
+i = future frame
+j = 21 joints
+
+而且比较时：
+
+不重新平移
+不重新旋转
+不重新 scale
+
+否则会把 camera-motion / metric-scale error 消掉，失去这个 benchmark 的意义。
+
+二十、Benchmark 不要最后才做
+
+建议从第一天就写：
+
+python scripts/evaluate_hot3d.py \
+    --prediction data/.../trajectory.npz \
+    --ground-truth ...
+
+然后可以得到：
+
+===============================
+HOT3D Evaluation
+===============================
+
+Action MPJPE : xx.xx mm
+Coverage     : xx.xx %
+FPS          : xx.xx
+
+Camera error : xx.xx
+Wrist error  : xx.xx
+Depth error  : xx.xx
+===============================
+
+这样每做一个模块都能知道到底有没有改善。
+
+二十一、最终的 ablation 表应该长这样
+
+这个工程真正做出来以后，你会得到一张非常漂亮的实验表：
+
+Pipeline	MPJPE	Coverage	FPS
+HaWoR original			
++ VGGT			
++ Sim(3)			
++ 40 overlap			
++ camera filter			
++ bone scale			
++ wrist depth			
+Final			
+
+Macrodata 的文章本身就是这样逐步定位瓶颈的：他们发现原始 HaWoR 的主要 runtime 瓶颈是 camera reconstruction + metric scale，占 61.7%；而最终系统则显著提高了吞吐。
+
+二十二、工程实现顺序，我建议严格按这个来
+
+不要一口气写完。
+
+Phase 0
+├── video → frames
+└── metadata
+
+Phase 1
+├── WiLoR
+├── handedness
+└── tracking
+      ↓
+   detection.npz
+
+Phase 2
+├── HaWoR
+├── 16 frame window
+├── 8 overlap
+└── temporal blending
+      ↓
+   hand_camera.npz
+
+Phase 3
+├── VGGT-Omega
+├── 200 window
+├── 40 overlap
+└── depth + pose
+      ↓
+   camera_windows/
+
+Phase 4
+├── overlap correspondence
+├── depth-derived Sim3
+├── window transform
+└── linear blending
+      ↓
+   camera_world.npz
+
+Phase 5
+└── p_w = R p_c + t
+      ↓
+   hand_world_raw.npz
+
+Phase 6
+├── camera 3-frame filter
+├── bone scale <= 3.5%
+└── wrist depth λ=0.2
+      ↓
+   hand_world_refined.npz
+
+Phase 7
+├── HOT3D Action MPJPE
+├── Coverage
+├── FPS
+└── visualization
+二十三、依赖方面，我建议不要强行统一成一个环境
+
+这是一个非常现实的问题。
+
+官方 HaWoR 当前 README 的测试环境是：
+
+Python 3.10
+PyTorch 1.13
+CUDA 11.7
+
+并且它自己的依赖包括 DROID-SLAM、Metric3D 等旧组件。
+
+而 VGGT-Omega 当前官方 repo 是另外一套环境，并且已经公开新的 416 reproduction checkpoint。
+
+因此不要追求：
+
+一个 conda env
+    ↓
+所有模型
+
+更稳的工程是：
+
+env_base
+env_hawor
+env_vggt
+
+或者：
+
+Docker
+ ├── hawor image
+ └── vggt image
+
+最外面：
+
+pipeline orchestrator
+
+负责：
+
+subprocess
++
+文件 IPC
+
+这其实和你之前在做的 C++ middleware 思路很契合。
+
+二十四、目前我建议你直接采用的版本
+Hand
+WiLoR
+   ↓
+custom conservative tracker
+   ↓
+HaWoR
+16 frames
+8 overlap
+
+WiLoR、HaWoR 的官方实现都可以作为 backend。
+
+Camera
+VGGT-Omega
+416
+200 frames
+40 overlap
+depth enabled
+
+目前公开的：
+
+VGGT-Omega-1B-416-Reproduction
+
+正好对应这个 resolution。
+
+Geometry
+depth correspondence
+      ↓
+Sim(3)
+      ↓
+weighted transform
+      ↓
+linear overlap blending
+Fusion
+p_world = R_c2w @ p_camera + t_c2w
+Refinement
+3-frame binomial camera translation
++
+bone/depth correction <= 3.5%
++
+wrist ray-constrained depth optimization
+λ = 0.2
+confidence weighting
+Output
+[T, 2, 21, 3]
+二十五、最终工程和你后面的 VLA 数据工程可以自然接起来
+
+这个结构最后可以变成：
+
+                 Ego4D / EgoExo4D
+                         │
+                         ▼
+                  Video Preprocess
+                         │
+             ┌───────────┴───────────┐
+             │                       │
+             ▼                       ▼
+        Semantic Branch        3D Geometry Branch
+       EgoMAN / VLM             WiLoR + HaWoR
+             │                       │
+             │                  VGGT-Omega
+             │                       │
+             │                     Sim3
+             │                       │
+             └───────────┬───────────┘
+                         ▼
+                   3D Hand Action
+                         │
+                         ▼
+                  Subtask Segmentation
+                  VITRA / Refiner / VLM
+                         │
+                         ▼
+             ┌────────────────────────┐
+             │ image                 │
+             │ instruction            │
+             │ 21×3 hand action       │
+             │ subtask                 │
+             │ timestamp              │
+             └────────────────────────┘
+                         │
+                         ▼
+                     VLA Dataset
+
+也就是说，这次这个工程最好先只负责 RGB → metric 3D hand action，暂时不要把 EgoMAN、Refiner、VLA training 混进去。
+总之。
+RGB-only pipeline
+
+Select any numbered step to inspect what it does.
+
+6 steps · 2 parallel branches
+
+Input
+
+Egocentric RGB video
+
+One monocular stream
+
+↓
+Camera-space hands
+
+WiLoR detections become HaWoR hand poses in each camera frame.
+
+Step 01Selected
+Track hands
+WiLoR
+Confidence ≥ 0.75 · same-side gaps ≤ 4 frames · IoU ≥ 0.20
+→
+Step 02
+Reconstruct hands
+HaWoR
+16-frame windows · 8-frame overlap · camera-space MANO + 21 joints
+Metric camera poses
+
+VGGT-Omega windows become one metric pose trajectory.
+
+Step 03
+Recover camera poses
+VGGT-Omega
+416 px · 200-frame windows · 40-frame overlap
+→
+Step 04
+Stitch camera poses
+Depth-derived Sim(3)
+Align overlap · blend shared frames
+Fuse synchronized results
+↓
+Step 05
+Fuse into world frame
+Hand pose + camera pose
+pw = Rpc + t · first camera defines the world frame
+→
+Step 06
+Post-process trajectory
+Post-processing
+3-frame camera filter · bone scale ≤ 3.5% · wrist depth along the original ray
+→
+Output
+
+Metric hand-action trajectory
+
+Fixed world frame · 21 joints · 15.53 FPS
