@@ -67,6 +67,53 @@ def probe(third_party: str | Path, weights_root: str | Path) -> BackendStatus:
     return probe_backend(HAWOR_SPEC, third_party=Path(third_party), weights_root=Path(weights_root))
 
 
+#: Where ``hawor.ckpt`` / ``infiller.pt`` / ``model_config.yaml`` may live. Both
+#: the upstream layout (``weights/hawor/checkpoints/...``) and the flat one that
+#: ``scripts/download_weights.sh`` produces (``weights/hawor/...``) are accepted.
+HAWOR_FILE_CANDIDATES: dict[str, tuple[str, ...]] = {
+    "checkpoint": ("hawor/checkpoints/hawor.ckpt", "hawor/hawor.ckpt", "hawor.ckpt"),
+    "infiller": (
+        "hawor/checkpoints/infiller.pt",
+        "hawor/infiller.pt",
+        "infiller.pt",
+    ),
+    "model_config": (
+        "hawor/checkpoints/model_config.yaml",
+        "hawor/model_config.yaml",
+        "model_config.yaml",
+    ),
+}
+
+
+def find_weights_files(
+    weights_root: str | Path, third_party: str | Path = "third_party"
+) -> dict[str, Path]:
+    """Resolve HaWoR's weight files across the layouts users actually end up with.
+
+    Returns the subset that exists; ``model_config.yaml`` also ships inside the
+    checkout, so it is looked up there as well.
+    """
+    root = Path(weights_root)
+    found: dict[str, Path] = {}
+    for name, relatives in HAWOR_FILE_CANDIDATES.items():
+        for relative in relatives:
+            candidate = root / relative
+            if candidate.is_file():
+                found[name] = candidate
+                break
+    if "model_config" not in found:
+        for relative in HAWOR_FILE_CANDIDATES["model_config"]:
+            candidate = Path(third_party) / "HaWoR" / relative.split("/")[-1]
+            if candidate.is_file():
+                found["model_config"] = candidate
+                break
+            candidate = Path(third_party) / "HaWoR" / "weights" / relative
+            if candidate.is_file():
+                found["model_config"] = candidate
+                break
+    return found
+
+
 def require(third_party: str | Path, weights_root: str | Path) -> BackendStatus:
     return require_backend(HAWOR_SPEC, third_party=Path(third_party), weights_root=Path(weights_root))
 

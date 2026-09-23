@@ -177,7 +177,7 @@ def check_backends(third_party: Path, weights_root: Path) -> list[Check]:
                 detail="checkout + weights present" if status.available else "; ".join(status.missing),
                 fix=(
                     f"git clone {clone} {third_party / checkout} && "
-                    f"python scripts/download_weights.py --only {selector} "
+                    f"./scripts/download_weights.sh --only {selector} "
                     "(see doc_auto/setup.md)"
                 ),
                 section="backends",

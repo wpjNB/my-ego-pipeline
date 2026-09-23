@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from ego3d_action.camera.vggt_omega import camera_window_from_output
+from ego3d_action.camera.vggt_omega import find_checkpoint as find_vggt_checkpoint
 from ego3d_action.detection.wilor import (
     RawDetection,
     build_raw_detection_arrays,
@@ -18,6 +19,7 @@ from ego3d_action.detection.wilor import (
 )
 from ego3d_action.errors import StageIOError
 from ego3d_action.hand.hawor import (
+    find_weights_files,
     hawor_tracks_from_detection,
     hand_windows_from_joints,
     load_hand_window,
@@ -104,6 +106,60 @@ def test_wilor_runner_reports_a_missing_checkpoint(tmp_path: Path) -> None:
 
 
 # ------------------------------------------------------------------ HaWoR
+
+
+def test_hawor_weights_are_found_in_both_layouts(tmp_path: Path) -> None:
+    """``weights/hawor/checkpoints/...`` (upstream) and ``weights/hawor/...`` (flat)."""
+    flat = tmp_path / "flat"
+    (flat / "hawor").mkdir(parents=True)
+    (flat / "hawor" / "hawor.ckpt").write_bytes(b"x")
+    (flat / "hawor" / "infiller.pt").write_bytes(b"x")
+    (flat / "hawor" / "model_config.yaml").write_text("model: hawor\n")
+    found = find_weights_files(flat, third_party=tmp_path / "third_party")
+    assert found["checkpoint"].name == "hawor.ckpt"
+    assert found["infiller"].name == "infiller.pt"
+    assert found["model_config"].name == "model_config.yaml"
+
+    nested = tmp_path / "nested"
+    (nested / "hawor" / "checkpoints").mkdir(parents=True)
+    (nested / "hawor" / "checkpoints" / "hawor.ckpt").write_bytes(b"x")
+    (nested / "hawor" / "checkpoints" / "infiller.pt").write_bytes(b"x")
+    nested_found = find_weights_files(nested, third_party=tmp_path / "third_party")
+    assert nested_found["checkpoint"].parent.name == "checkpoints"
+
+    # model_config.yaml also ships inside the checkout.
+    checkout = tmp_path / "third_party" / "HaWoR"
+    checkout.mkdir(parents=True)
+    (checkout / "model_config.yaml").write_text("model: hawor\n")
+    from_checkout = find_weights_files(tmp_path / "empty", third_party=tmp_path / "third_party")
+    assert from_checkout["model_config"].parent == checkout
+    assert "checkpoint" not in from_checkout
+
+
+def test_vggt_checkpoint_is_found_as_a_directory_or_a_file(tmp_path: Path) -> None:
+    name = "VGGT-Omega-1B-416-Reproduction"
+
+    documented = tmp_path / "weights" / "vggt-omega" / name
+    documented.mkdir(parents=True)
+    (documented / "model.safetensors").write_bytes(b"x")
+    assert find_vggt_checkpoint(tmp_path / "weights", name) == documented
+
+    flat = tmp_path / "flat" / "vggt-omega"
+    flat.mkdir(parents=True)
+    single = flat / "vggt_omega_1b_416_reproduce.pt"
+    single.write_bytes(b"x")
+    assert find_vggt_checkpoint(tmp_path / "flat", name) == flat
+
+    deeper = tmp_path / "deeper" / "vggt"
+    deeper.mkdir(parents=True)
+    torch_file = deeper / f"{name}.pt"
+    torch_file.write_bytes(b"x")
+    # An exact-name file beats the enclosing directory: it is the specific match.
+    assert find_vggt_checkpoint(tmp_path / "deeper", name) == torch_file
+
+    empty = tmp_path / "nothing"
+    empty.mkdir()
+    assert find_vggt_checkpoint(empty, name) is None
 
 
 def make_tracking(total: int = 40) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -206,14 +262,41 @@ def test_hawor_runner_prepares_frames_for_hawor(tmp_path: Path) -> None:
     frames_dir.mkdir()
     for index in range(3):
         (frames_dir / f"{index:06d}.jpg").write_bytes(b"stub")
+    # The runner resolves its weights before doing anything else.
+    weights = tmp_path / "weights" / "hawor"
+    weights.mkdir(parents=True)
+    (weights / "hawor.ckpt").write_bytes(b"stub")
+    (weights / "infiller.pt").write_bytes(b"stub")
     args = runner.build_parser().parse_args(
-        ["--frames", str(frames_dir), "--out-dir", str(tmp_path / "out"), "--weights", str(tmp_path)]
+        [
+            "--frames",
+            str(frames_dir),
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--weights",
+            str(tmp_path / "weights"),
+        ]
     )
     namespace = runner.build_hawor_args(args, tmp_path / "seq", frames_dir)
     images = sorted((tmp_path / "seq" / "extracted_images").glob("*.jpg"))
     assert [path.name for path in images] == ["0000.jpg", "0001.jpg", "0002.jpg"]
     assert namespace.video_path.endswith("seq.mp4")
     assert namespace.img_focal is None
+    assert namespace.checkpoint.endswith("hawor.ckpt")
+
+
+def test_hawor_runner_explains_missing_weights(tmp_path: Path) -> None:
+    runner = load_script("hawor_runner_mod3", "backends/hawor_runner.py")
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir()
+    args = runner.build_parser().parse_args(
+        ["--frames", str(frames_dir), "--out-dir", str(tmp_path / "out"), "--weights", str(tmp_path)]
+    )
+    with pytest.raises(FileNotFoundError) as excinfo:
+        runner.build_hawor_args(args, tmp_path / "seq", frames_dir)
+    message = str(excinfo.value)
+    assert "hawor/checkpoints/hawor.ckpt" in message  # the paths it looked at
+    assert "download_weights.sh" in message
 
 
 # ------------------------------------------------------------------ VGGT

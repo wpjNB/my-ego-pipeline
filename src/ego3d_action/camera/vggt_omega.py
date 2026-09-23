@@ -74,6 +74,34 @@ def probe(third_party: str | Path, weights_root: str | Path) -> BackendStatus:
     return probe_backend(VGGT_SPEC, third_party=Path(third_party), weights_root=Path(weights_root))
 
 
+def find_checkpoint(weights_root: str | Path, checkpoint: str) -> Path | None:
+    """Locate a VGGT-Omega checkpoint as a directory *or* a single file.
+
+    Accepts the documented layout (``weights/vggt-omega/<checkpoint>/``) and the
+    flatter variants people end up with after a manual download
+    (``weights/vggt-omega/<file>``, ``weights/vggt/<file>``, ``weights/<file>``).
+    """
+    root = Path(weights_root)
+    stem = checkpoint.replace("/", "_")
+    candidates = [
+        root / checkpoint,
+        root / "vggt-omega" / checkpoint,
+        root / "vggt" / checkpoint,
+        root / "vggt-omega" / f"{stem}.pt",
+        root / "vggt-omega" / f"{checkpoint}.pt",
+        root / "vggt" / f"{checkpoint}.pt",
+        root / f"{checkpoint}.pt",
+        root / "vggt-omega",
+        root / "vggt",
+    ]
+    for candidate in candidates:
+        if candidate.is_dir() and any(candidate.iterdir()):
+            return candidate
+        if candidate.is_file() and candidate.suffix in {".pt", ".pth", ".safetensors", ".ckpt"}:
+            return candidate
+    return None
+
+
 def require(third_party: str | Path, weights_root: str | Path) -> BackendStatus:
     return require_backend(VGGT_SPEC, third_party=Path(third_party), weights_root=Path(weights_root))
 

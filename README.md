@@ -28,8 +28,10 @@ model (its licence is separate). What is present:
 Ask the project itself at any time - it never guesses:
 
 ```bash
-conda run -n ego3d_base python scripts/download_weights.py --dry-run   # what to fetch, and where it goes
-conda run -n ego3d_base python scripts/download_weights.py             # fetch every fetchable file
+./scripts/download_weights.sh --dry-run     # the plan: every URL and destination, no traffic
+./scripts/download_weights.sh               # fetch everything (resumable), then verify
+./scripts/verify_weights.sh                 # size + container format of every weight
+./scripts/download_weights.sh --with-repos  # also clone the three backend repositories
 conda run -n ego3d_base python scripts/doctor.py --config configs/macrodata_final.yaml --runners
 ```
 

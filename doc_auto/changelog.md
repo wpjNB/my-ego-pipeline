@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-09-23 22:35 (+08:00) - bash weight scripts replace the Python downloader
+
+At the author's request the manifest-driven Python downloader was dropped
+(``weights.manifest.yaml``, ``runtime/weights.py``, ``scripts/download_weights.py``
+and their tests are gone). Weights are now fetched by two dependency-light bash
+scripts that work on a bare server:
+
+* ``scripts/download_weights.sh`` - ``wget -c``/``curl -C -`` into
+  ``<name>.part`` (resume), size check, then move into place; ``--only``,
+  ``--dest``, ``--dry-run`` and ``--with-repos`` (clones WiLoR/HaWoR recursively
+  and VGGT-Omega, per upstream); it runs the verifier automatically at the end.
+* ``scripts/verify_weights.sh`` - the suggested verify script, hardened: size
+  floor **and** container magic sniffing (zip for modern ``torch.save``, pickle
+  for legacy, the 8-byte JSON header for ``safetensors``, text for yaml), so a
+  truncated or HTML-error download is caught before ``torch.load`` sees it.
+  ``--quiet``/``--strict`` supported, non-zero exit when something required is
+  missing or unusable.
+* Weight paths are now ``weights/wilor/``, ``weights/hawor/checkpoints/``,
+  ``weights/vggt-omega/``, ``weights/mano/``. Because the flat layouts people
+  end up with (``weights/hawor/hawor.ckpt``, ``weights/vggt/...``) are easy to
+  produce by hand, ``hand/hawor.py::find_weights_files`` and
+  ``camera/vggt_omega.py::find_checkpoint`` now accept both, and
+  ``hawor_runner``/``vggt_runner`` use them.
+* MANO stays manual and is reported as such (licence-gated).
+* Test suite: **266 passed** (14 new for the bash scripts, 4 for the weight-path
+  resolvers).
+
 ## 2026-09-23 18:40 (+08:00) - one script downloads every weight
 
 * `weights.manifest.yaml`: declares every asset (id, backend, destination,

@@ -24,7 +24,10 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ego3d_action.camera.depth import scale_intrinsics  # noqa: E402
-from ego3d_action.camera.vggt_omega import camera_window_from_output  # noqa: E402
+from ego3d_action.camera.vggt_omega import (  # noqa: E402
+    camera_window_from_output,
+    find_checkpoint,
+)
 from ego3d_action.camera.window import make_windows, save_camera_window  # noqa: E402
 from ego3d_action.geometry.transforms import invert_rigid  # noqa: E402
 
@@ -62,14 +65,11 @@ def load_model(args: argparse.Namespace) -> object:
     if key in _MODEL_CACHE:
         return _MODEL_CACHE[key]
     weights = Path(args.weights)
-    candidates = [
-        weights / args.checkpoint,
-        weights,
-    ]
-    checkpoint_dir = next((path for path in candidates if path.is_dir()), None)
+    checkpoint_dir = find_checkpoint(weights, args.checkpoint)
     if checkpoint_dir is None:
         raise FileNotFoundError(
-            f"no checkpoint directory for '{args.checkpoint}' under {weights}"
+            f"no checkpoint for '{args.checkpoint}' under {weights}; run "
+            "scripts/download_weights.sh --only vggt (see doc_auto/setup.md)"
         )
     from vggt.models.vggt import VGGT  # noqa: PLC0415 - backend import
 

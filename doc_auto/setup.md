@@ -92,34 +92,47 @@ for plumbing runs - no model weights, and the MANO mesh model is not present on
 this machine either (its directories contain only a `.gitkeep` plus
 `mano_mean_params.npz`, which is just the mean pose/shape, not the model).
 
-Everything fetchable is declared in [`weights.manifest.yaml`](../weights.manifest.yaml)
-and downloaded into one tree by [`scripts/download_weights.py`](../scripts/download_weights.py):
+Two bash scripts do the whole job - no Python environment needed, so they also
+work on a bare server:
 
 ```bash
-python scripts/download_weights.py --dry-run            # the plan, no traffic
-python scripts/download_weights.py                      # fetch everything fetchable
-python scripts/download_weights.py --only wilor,hawor   # subset (id, alias or backend)
-python scripts/download_weights.py --verify-only        # audit what is on disk
-python scripts/download_weights.py --url-override hawor_checkpoint=https://...  # moved URL
+./scripts/download_weights.sh --dry-run        # the plan: every URL and destination, no traffic
+./scripts/download_weights.sh                  # fetch everything (resumable), then verify
+./scripts/download_weights.sh --only wilor,hawor
+./scripts/download_weights.sh --with-repos     # also clone third_party/*
+DEST=/mnt/weights ./scripts/download_weights.sh
+
+./scripts/verify_weights.sh                    # re-check size + container format
+./scripts/verify_weights.sh --quiet --strict   # only problems; optional assets count too
 ```
 
-Properties worth knowing:
+* **resumable** - `wget -c` (or `curl -C -`) into `<name>.part`, moved into
+  place only after the size check passes;
+* **verified** - `verify_weights.sh` checks a size floor *and* the container
+  magic bytes (`PK\x03\x04` zip for modern `torch.save`, `\x80` pickle for a
+  legacy one, the 8-byte little-endian JSON header for `safetensors`), so the
+  classic "wget succeeded on an HTML error page, `torch.load` explodes later"
+  failure is caught immediately. A `sha256` is supported per entry;
+* **explicit about MANO** - it is licence-gated, so the script never fetches it;
+  it prints the registration page, the exact filename, the destination and the
+  conversion command;
+* **paths match the code** - `weights/wilor/`, `weights/hawor/checkpoints/`,
+  `weights/vggt-omega/`, `weights/mano/`. The runners also accept the flat
+  variants (`weights/hawor/hawor.ckpt`, `weights/vggt/...`) so a manual download
+  is never a dead end.
 
-* **resumable** - partial downloads live in `<dest>.part` and continue with an
-  HTTP `Range` request (or simply resume from a `file://` mirror);
-* **verified** - size floor, optional `sha256`, and format sniffing that works
-  without torch (a modern `torch.save` file is a zip, a legacy one a pickle,
-  `safetensors` starts with a JSON header, `npz` is a zip with `.npy` members);
-* **atomic** - a file only appears at its final path after it passes; a corrupt
-  download is quarantined as `<dest>.part.bad` instead of being installed;
-* **honest about the rest** - `auth: manual` entries (MANO) and entries whose
-  URL is still a `<placeholder>` are never fetched; the run ends with the exact
-  page, filename, destination and follow-up command.
+**The URLs in the script were transcribed from each project's documentation and
+could not be verified from the development machine (no network).** A moved URL
+shows up as `[FAIL] ... only N bytes`; fix it in the script (the `WILOR_BASE` /
+`HAWOR_BASE` / `VGGT_URL` variables at the top) or drop the file in by hand and
+re-run `./scripts/verify_weights.sh`. Those same variables point the script at a
+local mirror on an air-gapped host:
 
-**The URLs in the manifest were transcribed from each project's documentation
-and could not be verified from the development machine (no network).** The
-script checks every download, so a moved URL shows up as an error with the
-mirrors it tried - fix it with `--url-override` or by editing the manifest.
+```bash
+WILOR_BASE=file:///srv/mirror/wilor HAWOR_BASE=file:///srv/mirror/hawor \
+VGGT_URL=file:///srv/mirror/vggt_omega_1b_416_reproduce.pt \
+    ./scripts/download_weights.sh
+```
 
 | Asset | Where it goes | Source | Needed for |
 | --- | --- | --- | --- |
@@ -131,7 +144,7 @@ mirrors it tried - fix it with `--url-override` or by editing the manifest.
 Then verify end to end:
 
 ```bash
-conda run -n ego3d_base python scripts/download_weights.py --verify-only
+./scripts/verify_weights.sh --strict
 conda run -n ego3d_base python scripts/doctor.py --config configs/macrodata_final.yaml --runners
 # every backend should print ok; --check reports the exact missing file otherwise
 ```

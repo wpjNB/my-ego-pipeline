@@ -46,6 +46,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ego3d_action.hand.hawor import (  # noqa: E402
+    HAWOR_FILE_CANDIDATES,
+    find_weights_files,
     hawor_tracks_from_detection,
     hand_windows_from_joints,
     save_hawor_tracks,
@@ -93,11 +95,19 @@ def build_hawor_args(args: argparse.Namespace, seq_folder: Path, frames_dir: Pat
             os.link(frame, target)
         except OSError:  # different filesystem - fall back to a symlink
             target.symlink_to(frame.resolve())
+    files = find_weights_files(args.weights, args.third_party)
+    missing = [name for name in ("checkpoint", "infiller") if name not in files]
+    if missing:
+        raise FileNotFoundError(
+            f"HaWoR weight file(s) {missing} not found under {args.weights}; looked for "
+            f"{[rel for name in missing for rel in HAWOR_FILE_CANDIDATES[name]]} - run "
+            "scripts/download_weights.sh --only hawor"
+        )
     return argparse.Namespace(
         video_path=str(seq_folder.parent / f"{seq_folder.name}.mp4"),
         input_type="file",
-        checkpoint=str(Path(args.weights) / "hawor" / "checkpoints" / "hawor.ckpt"),
-        infiller_weight=str(Path(args.weights) / "hawor" / "checkpoints" / "infiller.pt"),
+        checkpoint=str(files["checkpoint"]),
+        infiller_weight=str(files["infiller"]),
         img_focal=args.focal,
         vis_mode="cam",
     )
