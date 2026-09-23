@@ -40,3 +40,18 @@ pyyaml 6.0.3 | pytest 9.0.3 | matplotlib 3.11.0 | ffmpeg 6.1.1 (system)
 Set `MPLCONFIGDIR` to a writable directory when `$HOME` is read-only, e.g.
 `MPLCONFIGDIR=/tmp/mpl-cache`.
 
+## Git metadata
+
+Last modified: 2026-09-23 17:05 (+08:00)
+
+`/home/wpj/ego/my-ego-pipeline/.git` is a read-only tmpfs mount point, so a
+conventional `git init` fails with `Read-only file system`. The repository
+metadata therefore lives in `.gitstore/` (excluded via `.gitignore`):
+
+```bash
+GIT_DIR=.gitstore GIT_WORK_TREE=$PWD git log --oneline
+GIT_DIR=.gitstore GIT_WORK_TREE=$PWD git status --short
+```
+
+`.agents/` and `.codex/` in the workspace root are read-only mounts for the same
+reason and are unused by this project.

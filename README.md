@@ -156,12 +156,20 @@ conda run -n ego3d_base python scripts/evaluate_hot3d.py \
 make test        # whole suite
 make test-fast   # skips the synthetic stitching scene
 make smoke       # synthesises a video and runs Phase 0 end to end
+conda run -n ego3d_base python scripts/demo_synthetic.py   # GPU-free Phase-4 demo
 ```
 
 The suite covers Sim(3)/Umeyama, transforms, hand blending, wrist depth, bone
 scale, camera filter, conservative tracking, window scheduling, stitching on a
 synthetic scene with a known Sim(3), the trajectory contract, ffmpeg frame IO
 and the Action-MPJPE protocol.
+
+## Repository note
+
+This workspace ships a read-only `.git` mount point, so the repository metadata
+lives in `.gitstore/` instead. Use `GIT_DIR=.gitstore GIT_WORK_TREE=$PWD git ...`
+for git commands, or move the project to a normal directory for a conventional
+checkout.
 
 ## Current status
 

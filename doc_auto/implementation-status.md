@@ -1,6 +1,9 @@
 # Implementation status
 
-Last modified: 2026-09-23 17:12 (+08:00)
+Last modified: 2026-09-23 17:06 (+08:00)
+
+Test suite: **166 passed in ~6 s** on the CPU-only laptop
+(`conda run -n ego3d_base python -m pytest -q`).
 
 ## Complete and tested (CPU)
 
@@ -35,4 +38,3 @@ error message names the environment, the checkpoint and the missing paths.
 2. Run Phases 1-3 on one GPU clip and check the debug videos.
 3. Fill the ablation table from `scripts/evaluate_hot3d.py` outputs.
 4. Add the HOT3D episode loader once the sequence list is fixed.
-
