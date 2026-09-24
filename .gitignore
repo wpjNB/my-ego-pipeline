@@ -30,5 +30,8 @@ outputs/
 *.avi
 *.mov
 
+# Downloaded model archives (weights/ and data/ are ignored anyway)
+*.zip
+
 # wget writes this next to the working directory on some failures
 wget-log*

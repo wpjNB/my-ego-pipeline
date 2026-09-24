@@ -157,7 +157,7 @@ def load_mano_model(path: str | Path, *, hands: str | None = None) -> ManoModel:
         with np.load(source, allow_pickle=False) as handle:
             data = {key: handle[key] for key in handle.files}
     elif source.suffix == ".pkl":
-        data = _read_mano_pickle(source)
+        data = read_mano_pickle(source)
     else:
         raise StageIOError(f"unsupported MANO model format: {source.suffix}")
 
@@ -217,23 +217,99 @@ def load_mano_models(path: str | Path) -> dict[str, ManoModel]:
     return models
 
 
-def _read_mano_pickle(path: Path) -> dict[str, Array]:
-    try:
-        import pickle
+def read_mano_pickle(path: str | Path) -> dict[str, Array]:
+    """Read the official ``MANO_*.pkl`` **without chumpy**.
 
-        import chumpy  # noqa: F401 - needed to unpickle the official model
-    except ImportError as exc:
-        raise StageIOError(
-            f"{path} is the official pickle and needs chumpy to unpickle. Either run "
-            "scripts/convert_mano.py in the HaWoR environment (which has chumpy), or install "
-            "chumpy in this one."
-        ) from exc
-    with path.open("rb") as handle:
-        raw = pickle.load(handle, encoding="latin1")
+    chumpy 0.70 needs both ``numpy<1.24`` and Python <= 3.10 (it calls
+    ``inspect.getargspec``), which is incompatible with the orchestrator's
+    numpy 2.x - and the only chumpy object in the MANO archive is
+    ``shapedirs``, a ``Select`` wrapper around a plain array. This reader
+    unpickles with a tiny stand-in for the chumpy classes and materialises them,
+    so the model can be used directly. ``scripts/convert_mano.py`` uses the same
+    function to write a portable ``.npz``.
+    """
+    import pickle
+
+    source = Path(path)
+    if not source.is_file():
+        raise StageIOError(f"MANO model not found: {source}")
+
+    class _ChumpyObject:
+        """Stand-in for a chumpy object; keeps its state for materialisation."""
+
+        _chumpy_class = "unknown"
+
+        def __new__(cls, *args: object, **kwargs: object) -> "_ChumpyObject":
+            instance = object.__new__(cls)
+            instance._shim_args = args  # type: ignore[attr-defined]
+            instance._shim_kwargs = kwargs  # type: ignore[attr-defined]
+            return instance
+
+        def __setstate__(self, state: object) -> None:
+            self._shim_state = state  # type: ignore[attr-defined]
+
+    def _subclass(module: str, name: str) -> type:
+        return type(name, (_ChumpyObject,), {"_chumpy_class": f"{module}.{name}"})
+
+    class _Unpickler(pickle.Unpickler):
+        def find_class(self, module: str, name: str) -> object:
+            if module.split(".")[0] == "chumpy":
+                return _subclass(module, name)
+            # The archive references scipy's deprecated `scipy.sparse.csc`
+            # namespace; import the supported location instead of warning.
+            if module == "scipy.sparse.csc" and name == "csc_matrix":
+                from scipy.sparse import csc_matrix  # noqa: PLC0415
+
+                return csc_matrix
+            return super().find_class(module, name)
+
+    def _materialise(value: object, depth: int = 0) -> object:
+        if depth > 8:
+            raise StageIOError(f"{source}: chumpy object nesting too deep to resolve")
+        if isinstance(value, np.ndarray):
+            return value
+        if isinstance(value, _ChumpyObject):
+            state = getattr(value, "_shim_state", None)
+            if not isinstance(state, dict):
+                raise StageIOError(
+                    f"{source}: {value._chumpy_class} has no unpicklable state"
+                )
+            if hasattr(value, "_shim_args") and value._shim_args:  # type: ignore[attr-defined]
+                args = [_materialise(item, depth + 1) for item in value._shim_args]  # type: ignore[attr-defined]
+                if len(args) == 1:
+                    return args[0]
+            if "a" in state and "idxs" in state:  # chumpy.reordering.Select
+                base = np.asarray(_materialise(state["a"], depth + 1))
+                idxs = np.asarray(state["idxs"], dtype=np.int64)
+                shape = tuple(state.get("preferred_shape") or ())
+                flat = base.ravel()[idxs]
+                return flat.reshape(shape) if shape else flat
+            if "x" in state:  # plain chumpy.Ch
+                return _materialise(state["x"], depth + 1)
+            raise StageIOError(
+                f"{source}: cannot materialise {value._chumpy_class} "
+                f"(state keys: {sorted(state)})"
+            )
+        if hasattr(value, "toarray"):  # scipy sparse
+            return value.toarray()
+        return value
+
+    with source.open("rb") as handle:
+        raw = _Unpickler(handle, encoding="latin1").load()
+    if not isinstance(raw, dict):
+        raise StageIOError(f"{source} did not unpickle to a dict of model arrays")
+
+    # The archive uses the original MANO spelling ("J_regressor"); this package
+    # uses lower-case keys.
+    aliases = {"J_regressor": "j_regressor", "shapedirs": "shapedirs", "f": "f"}
     out: dict[str, Array] = {}
     for key, value in raw.items():
-        out[key] = np.asarray(getattr(value, "r", value))
-    logger.info("read MANO pickle %s with %d entries", path.name, len(out))
+        materialised = _materialise(value)
+        if not isinstance(materialised, np.ndarray):
+            logger.debug("skipping non-array entry '%s' (%s)", key, type(materialised).__name__)
+            continue
+        out[aliases.get(key, key)] = materialised
+    logger.info("read MANO pickle %s with %d arrays", source.name, len(out))
     return out
 
 
@@ -397,11 +473,12 @@ def landmarks_match_topology(landmarks: Array, *, tolerance: float = 0.0) -> boo
 
     Each finger chain must get *farther* from the wrist along its links. This is
     a cheap guard against the classic mapping bug - emitting a finger tip where a
-    proximal joint belongs - not a proof that the mapping is right; the unit
-    tests pin the mapping itself against a synthetic model. ``tolerance`` is an
-    absolute slack in metres, and callers should treat a ``False`` result as a
-    warning rather than a hard failure, since a heavily curled finger can
-    legitimately break strict monotonicity.
+    proximal joint belongs - not a proof that the mapping is right.
+
+    Only meaningful in the **rest pose**: a real hand curls, and a curled finger
+    legitimately brings its tip closer to the wrist than its own middle joint, so
+    running this per frame on reconstructed poses produces false alarms. Use
+    :func:`validate_landmark_mapping` for the pose-independent check.
     """
     points = np.asarray(landmarks, dtype=np.float64)
     if points.shape[-2:] != (NUM_JOINTS, 3):
@@ -415,3 +492,50 @@ def landmarks_match_topology(landmarks: Array, *, tolerance: float = 0.0) -> boo
         if np.any(child_distance + tolerance < parent_distance):
             return False
     return True
+
+
+def rest_landmarks(model: ManoModel, *, batch: int = 1) -> Array:
+    """The model's canonical rest pose (zero betas, identity joint rotations)."""
+    return forward_kinematics(
+        model,
+        np.zeros((batch, model.num_betas), dtype=np.float64),
+        np.broadcast_to(np.eye(3), (batch, 15, 3, 3)).copy(),
+    )
+
+
+def validate_landmark_mapping(model: ManoModel) -> tuple[bool, str]:
+    """Pose-independent check that the landmark mapping matches ``model``.
+
+    Run once per model, in its rest pose: there every finger chain must run
+    monotonically away from the wrist, and the per-finger tip must be the
+    farthest landmark of its chain. A wrong mapping (e.g. a tip emitted where an
+    MCP belongs) breaks that immediately, while a real curled pose does not get
+    a say.
+
+    Returns:
+        ``(ok, detail)`` - ``detail`` carries the offending chain when it fails.
+    """
+    landmarks = rest_landmarks(model)
+    if not landmarks_match_topology(landmarks):
+        return False, (
+            "finger chains are not monotone in the rest pose - the landmark mapping "
+            "does not match this model"
+        )
+    wrist = landmarks[0, 0]
+    chains: dict[str, list[int]] = {
+        "thumb": [1, 2, 3, 4],
+        "index": [5, 6, 7, 8],
+        "middle": [9, 10, 11, 12],
+        "ring": [13, 14, 15, 16],
+        "pinky": [17, 18, 19, 20],
+    }
+    distances = np.linalg.norm(landmarks[0] - wrist, axis=-1)
+    for finger, chain in chains.items():
+        tip = chain[-1]
+        if distances[tip] < max(distances[joint] for joint in chain):
+            return False, f"{finger}: the tip is not the farthest landmark of its chain"
+    spans = {finger: float(distances[chain[-1]]) for finger, chain in chains.items()}
+    detail = "rest-pose chains monotone; tip reach (mm): " + ", ".join(
+        f"{finger} {1000.0 * value:.0f}" for finger, value in sorted(spans.items())
+    )
+    return True, detail

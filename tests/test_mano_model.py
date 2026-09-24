@@ -18,6 +18,8 @@ from ego3d_action.hand.mano_model import (
     landmarks_match_topology,
     load_mano_model,
     mirror_to_left,
+    rest_landmarks,
+    validate_landmark_mapping,
 )
 from ego3d_action.testing.synthetic import (
     make_synthetic_mano_model,
@@ -211,3 +213,45 @@ def test_model_rejects_inconsistent_shapes() -> None:
             j_regressor=np.zeros((16, 800)),
             weights=np.zeros((800, 16)),
         )
+
+
+# ------------------------------------------------- real MANO (licence-gated)
+
+MANO_DIR = Path("weights/mano")
+
+
+def test_reads_the_official_pickle_without_chumpy() -> None:
+    """The official archive wraps only `shapedirs` in chumpy; we materialise it."""
+    source = MANO_DIR / "MANO_RIGHT.pkl"
+    if not source.is_file():
+        pytest.skip("MANO is licence-gated and not present in this checkout")
+    model = load_mano_model(source)
+    assert model.num_vertices == 778
+    assert model.num_betas == 10
+    assert model.j_regressor.shape == (16, 778)
+    assert model.weights.shape == (778, 16)
+    assert model.posedirs is not None and model.posedirs.shape == (778, 3, 135)
+    assert model.faces is not None and model.faces.shape == (1538, 3)
+    assert model.j_regressor.sum() > 0  # the archive spells it `J_regressor`
+
+
+def test_real_model_rest_pose_looks_like_a_hand() -> None:
+    """A pose-independent check of the landmark mapping against the real model."""
+    source = MANO_DIR / "MANO_RIGHT.pkl"
+    if not source.is_file():
+        pytest.skip("MANO is licence-gated and not present in this checkout")
+    model = load_mano_model(source)
+    ok, detail = validate_landmark_mapping(model)
+    assert ok, detail
+    assert "monotone" in detail
+
+    landmarks = rest_landmarks(model)
+    wrist = landmarks[0, 0]
+    reach = {
+        name: float(np.linalg.norm(landmarks[0, index] - wrist))
+        for index, name in ((12, "middle"), (8, "index"), (16, "ring"), (20, "pinky"), (4, "thumb"))
+    }
+    # A real adult hand: ~15-20 cm reach, middle finger longest, thumb shortest.
+    assert 0.13 < reach["middle"] < 0.22
+    assert reach["middle"] == max(reach.values())
+    assert reach["thumb"] == min(reach.values())

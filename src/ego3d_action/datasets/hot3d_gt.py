@@ -44,8 +44,8 @@ from ..geometry.transforms import invert_rigid
 from ..hand.mano_model import (
     ManoModel,
     forward_kinematics,
-    landmarks_match_topology,
     mirror_pose,
+    validate_landmark_mapping,
 )
 from ..io.serialization import save_json, save_npz
 
@@ -55,6 +55,10 @@ Array = np.ndarray
 
 STATE_PER_HAND = 61
 STATE_LAYOUT = "45x axis-angle (15 joints), 3, 3, 10 shared betas"
+
+#: Models whose landmark mapping has already been validated in this process
+#: (the check is pose-independent but only needs to run once per model).
+_MAPPING_VALIDATED: dict[int, bool] = {}
 
 
 @dataclass(frozen=True)
@@ -295,12 +299,16 @@ def _joints_from_mano(
         )
         frame_valid = valid[:, hand]
         joints[:, hand] = np.where(frame_valid[:, None, None], landmarks, np.nan)
-        if frame_valid.any() and not landmarks_match_topology(landmarks[frame_valid]):
-            logger.warning(
-                "hand %d: MANO landmarks do not follow the project topology; check the "
-                "landmark mapping against the model",
-                hand,
-            )
+        # The mapping is validated once, in the model's rest pose: a real curled
+        # hand legitimately brings its fingertips closer to the wrist than a
+        # proximal joint, so a per-frame check would only produce false alarms.
+        if hand not in _MAPPING_VALIDATED:
+            ok, detail = validate_landmark_mapping(model)
+            _MAPPING_VALIDATED[hand] = ok
+            if ok:
+                logger.info("hand %d: MANO landmark mapping verified (%s)", hand, detail)
+            else:
+                logger.warning("hand %d: %s", hand, detail)
     mode = "mano_fk_mirrored" if mirrored_any else "mano_fk"
     return joints, mode
 

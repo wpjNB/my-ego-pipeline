@@ -201,8 +201,36 @@ def test_import_lerobot_cli_writes_the_reference(tmp_path: Path) -> None:
     metadata = json.loads(
         (tmp_path / "sample_ep000" / "trajectory" / "ground_truth.json").read_text(encoding="utf-8")
     )
-    assert metadata["hand_joints"] == "wrist_only"
+    # The reference is 21-joint when a MANO model is configured and present,
+    # wrist-only otherwise (both are valid outcomes of this command).
+    mano_configured = (REPO_ROOT / "weights" / "mano").exists()
+    expected = "mano_fk" if mano_configured else "wrist_only"
+    assert metadata["hand_joints"].startswith(expected)
     assert metadata["world_frame"] == 0
+
+
+@pytest.mark.skipif(not SAMPLE_ROOT.is_dir(), reason="bundled LeRobot sample missing")
+def test_import_lerobot_cli_can_force_wrist_only(tmp_path: Path) -> None:
+    result = run_script(
+        "scripts/import_lerobot.py",
+        "--config",
+        "configs/hot3d.yaml",
+        "--clip",
+        "sample_ep000",
+        "--data-root",
+        str(tmp_path),
+        "--root",
+        str(SAMPLE_ROOT),
+        "--episode",
+        "0",
+        "--no-frames",
+        "--no-mano",
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    metadata = json.loads(
+        (tmp_path / "sample_ep000" / "trajectory" / "ground_truth.json").read_text(encoding="utf-8")
+    )
+    assert metadata["hand_joints"] == "wrist_only"
 
 
 @pytest.mark.skipif(not SAMPLE_ROOT.is_dir(), reason="bundled LeRobot sample missing")

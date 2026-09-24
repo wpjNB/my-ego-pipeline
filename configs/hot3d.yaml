@@ -12,7 +12,8 @@ paths:
   outputs: outputs
   hot3d_root: data/hot3d
   lerobot_root: data/samples/lerobot_v3
-  mano_model: null         # e.g. weights/mano (see scripts/convert_mano.py)
+  mano_model: weights/mano # enables 21-joint references; use --no-mano to fall
+                           # back to wrist-only (the directory is git-ignored)
   backends: backends
 
 backends:

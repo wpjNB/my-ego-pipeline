@@ -45,6 +45,11 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="MANO model file or directory; enables 21-joint ground truth",
     )
+    parser.add_argument(
+        "--no-mano",
+        action="store_true",
+        help="force a wrist-only reference even when a MANO model is configured",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -57,7 +62,9 @@ def main(argv: list[str] | None = None) -> int:
             return fail("--root is required (or set paths.lerobot_root in the config)")
 
         dataset = LeRobotDataset(root)
-        mano_path = args.mano_model or context.config.get("paths.mano_model", None)
+        mano_path = None if args.no_mano else (
+            args.mano_model or context.config.get("paths.mano_model", None)
+        )
         mano_models = load_mano_models(mano_path) if mano_path else None
         if mano_models:
             print(

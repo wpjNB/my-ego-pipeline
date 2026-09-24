@@ -191,13 +191,23 @@ conda run -n ego3d_hawor python scripts/convert_mano.py \
 # then, in configs/hot3d.yaml:  paths.mano_model: weights/mano
 ```
 
-The `.pkl` needs `chumpy` (present in `ego3d_hawor`); the `.npz` needs nothing.
+**No chumpy is needed.** The official archive wraps only ``shapedirs`` in a
+chumpy ``Select``; ``hand/mano_model.py::read_mano_pickle`` unpickles it with a
+tiny stand-in class and materialises the array, so this project reads the
+official pickle directly (and ``convert_mano.py`` can still write a portable
+``.npz`` if you prefer). chumpy 0.70 would otherwise require both ``numpy<1.24``
+and Python <= 3.10, which is incompatible with the orchestrator environment.
+
 `MANO_RIGHT` alone is enough for this project - our FK mirrors it for the left
 hand (`mano_mirrored` in the reference metadata) and HaWoR's `run_mano_left` has
 a `fix_shapedirs` workaround - but passing `MANO_LEFT.pkl` too removes that
 approximation. `./scripts/verify_weights.sh` lists all four locations, and both
 backend runners report the missing file in their `--check`. Without MANO the CPU
 path still works: references stay wrist-only and the evaluation says so.
+
+Once `weights/mano` holds the models, `configs/hot3d.yaml` already points at it
+(`paths.mano_model: weights/mano`), so `scripts/import_lerobot.py` writes 21-joint
+references; `--no-mano` falls back to wrist-only for a quick check.
 
 ## 5. Sample data
 

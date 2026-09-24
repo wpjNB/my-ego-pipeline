@@ -1,5 +1,41 @@
 # Changelog
 
+## 2026-09-24 22:20 (+08:00) - MANO installed; read the official pickle without chumpy
+
+The author downloaded `mano_v1_2.zip` from the official site (the download is
+behind a login, so no script can fetch it). `scripts/install_mano.sh --from
+mano_v1_2.zip` unpacked it and installed both models into the places that need
+them: HaWoR's `_DATA/data/mano` and `_DATA/data_left/mano_left`, `weights/mano`
+and WiLoR's `mano_data` (the last one only matters for WiLoR's own 3D model).
+
+The interesting part was avoiding chumpy: chumpy 0.70 needs ``numpy<1.24`` *and*
+Python <= 3.10 (it calls ``inspect.getargspec``), which cannot coexist with the
+orchestrator's numpy 2.x. Inspecting the archive showed only ``shapedirs`` is
+chumpy-wrapped - a ``reordering.Select`` over a plain ``(778, 3, 20)`` array with
+23340 indices and a ``preferred_shape``. ``hand/mano_model.py::read_mano_pickle``
+now unpickles with a stand-in class, materialises ``Select``/``Ch``/csc_matrix and
+normalises the archive's ``J_regressor`` spelling, so:
+
+* the official pickles load directly - no chumpy, no extra environment;
+* ``scripts/convert_mano.py`` writes ``.npz`` in the base env (it used to demand
+  chumpy);
+* ``configs/hot3d.yaml`` points at ``weights/mano``, so HOT3D references are now
+  **21-joint** (`hand_joints: mano_fk`);
+* ``--no-mano`` on the importer gives the wrist-only reference on demand.
+
+Verification on the real model: 778 vertices / 10 betas / (16,778) regressor /
+(778,16) weights / (778,3,135) posedirs / (1538,3) faces; rest-pose landmark
+chains monotone with middle 175 mm, index 170, ring 165, pinky 142, thumb 129 -
+anatomically right. The 21-joint skeleton now wraps the real hands in the sample
+footage (it previously fanned straight out because the shape came from the
+synthetic stand-in).
+
+Also fixed: the topology check was running per frame and warning on real curled
+hands - it is only meaningful in the rest pose, so it now runs once per model via
+``validate_landmark_mapping`` (rest-pose monotonicity + tip-is-farthest).
+
+Test suite: **281 passed**.
+
 ## 2026-09-24 22:10 (+08:00) - backend runners rewritten against the real sources
 
 With the checkouts finally on disk, every call was re-derived from the code
