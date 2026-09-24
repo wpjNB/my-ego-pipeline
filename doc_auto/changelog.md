@@ -37,7 +37,11 @@ someone projects world points with the intrinsics alone), a `--skeleton` flag on
 `scripts/render_gt_vs_pred.py`, and `scripts/demo_hot3d_sample.sh` now renders the
 reference overlay *with* the skeleton. The four misleading ad-hoc PNGs were
 deleted and replaced by `outputs/reference_overlay_frame{150,375}.png` from the
-real script.
+real script (`outputs/wrong_world_projection_150.png` keeps the reproduction of
+the broken one for comparison). The stale stills from the 2026-09-23 runs in
+`data/hot3d/hot3d_ep000/visualization/gt_vs_pred_stills/` were regenerated too -
+their filenames depend on the still-index selection, so the README now points at
+the explicitly named `outputs/` copies instead of a still path.
 
 Test suite: **288 passed**.
 

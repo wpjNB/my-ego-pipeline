@@ -151,7 +151,7 @@ metadata.
 The viewer projects the reference wrist (and a prediction, if given) on the RGB
 with the reference camera:
 
-![ground truth on the sample](/home/wpj/ego/my-ego-pipeline/data/hot3d/hot3d_ep000/visualization/gt_vs_pred_stills/000150.png)
+![ground truth on the sample](/home/wpj/ego/my-ego-pipeline/outputs/reference_overlay_frame150.png)
 
 Add `--skeleton` to `scripts/render_gt_vs_pred.py` to draw the reference's 21
 joints as well; the flag, the wrist marker and every other overlay run the joints
