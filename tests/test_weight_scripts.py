@@ -13,12 +13,22 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DOWNLOAD = REPO_ROOT / "scripts" / "download_weights.sh"
 VERIFY = REPO_ROOT / "scripts" / "verify_weights.sh"
+MANO = REPO_ROOT / "scripts" / "install_mano.sh"
 
 
 def run(script: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     # The real floors are 4.58 GB (VGGT) / 10 MiB (WiLoR, HaWoR); tests use small
     # sparse files and lower the VGGT floor so the scripts stay fast.
-    merged = {**os.environ, "VGGT_MIN_BYTES": "1000000", **(env or {})}
+    # The real floors are 2.4 GB / 3.1 GB / 400 MB / 4.3 GB (measured on the
+    # hubs); tests use small fakes and lower every floor.
+    merged = {
+        **os.environ,
+        "WILOR_MIN_BYTES": "1000000",
+        "HAWOR_MIN_BYTES": "1000000",
+        "INFILLER_MIN_BYTES": "1000000",
+        "VGGT_MIN_BYTES": "1000000",
+        **(env or {}),
+    }
     return subprocess.run(
         [str(script), *args],
         cwd=REPO_ROOT,
@@ -58,6 +68,116 @@ def test_scripts_are_executable_and_parse(script: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_mano_installer_is_executable_and_parses() -> None:
+    assert MANO.is_file() and os.access(MANO, os.X_OK)
+    result = subprocess.run(["bash", "-n", str(MANO)], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+# ------------------------------------------------------------ MANO install
+
+
+def make_fake_mano(directory: Path, *, left: bool = True) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    for name, size in (("MANO_RIGHT.pkl", 2_000_000), ("MANO_LEFT.pkl", 1_500_000)):
+        if name.endswith("LEFT.pkl") and not left:
+            continue
+        path = directory / name
+        with path.open("wb") as handle:
+            handle.write(b"\x80\x04\x95")
+            handle.seek(size - 1)
+            handle.write(b"\0")
+    return directory
+
+
+def test_mano_installer_requires_a_source() -> None:
+    result = run(MANO)
+    assert result.returncode == 2
+    assert "--from" in result.stderr
+
+    missing = run(MANO, "--from", "/tmp/definitely-not-here-mano")
+    assert missing.returncode == 2
+    assert "does not exist" in missing.stderr
+
+
+def test_mano_installer_rejects_a_bogus_pickle(tmp_path: Path) -> None:
+    source = tmp_path / "mano"
+    source.mkdir()
+    (source / "MANO_RIGHT.pkl").write_text("not a pickle at all")
+    result = run(MANO, "--from", str(source), "--third-party", str(tmp_path / "tp"), "--dest-root", str(tmp_path / "w"))
+    assert result.returncode == 1
+    assert "not a MANO model" in result.stderr or "not a pickle" in result.stderr
+
+
+def test_mano_installer_dry_run_lists_every_destination(tmp_path: Path) -> None:
+    source = make_fake_mano(tmp_path / "mano")
+    tp, dest = tmp_path / "third_party", tmp_path / "weights"
+    result = run(
+        MANO, "--from", str(source), "--dry-run",
+        "--third-party", str(tp), "--dest-root", str(dest),
+    )
+    assert result.returncode == 0, result.stderr
+    for needle in (
+        "third_party/HaWoR/_DATA/data/mano/MANO_RIGHT.pkl",
+        "third_party/HaWoR/_DATA/data_left/mano_left/MANO_LEFT.pkl",
+        "third_party/WiLoR/mano_data/MANO_RIGHT.pkl",
+        "weights/mano/MANO_RIGHT.pkl",
+    ):
+        assert needle in result.stdout
+    assert "plan complete" in result.stdout
+    assert not tp.exists() and not dest.exists()  # a plan touches nothing
+
+
+def test_mano_installer_copies_into_all_four_locations(tmp_path: Path) -> None:
+    source = make_fake_mano(tmp_path / "mano")
+    tp, dest = tmp_path / "third_party", tmp_path / "weights"
+    result = run(
+        MANO, "--from", str(source),
+        "--third-party", str(tp), "--dest-root", str(dest),
+    )
+    assert result.returncode == 0, result.stderr
+    for target in (
+        tp / "HaWoR/_DATA/data/mano/MANO_RIGHT.pkl",
+        tp / "HaWoR/_DATA/data_left/mano_left/MANO_LEFT.pkl",
+        tp / "WiLoR/mano_data/MANO_RIGHT.pkl",
+        dest / "mano/MANO_RIGHT.pkl",
+    ):
+        assert target.is_file(), target
+        assert target.stat().st_size > 1_000_000
+    # A second run is a no-op.
+    again = run(
+        MANO, "--from", str(source),
+        "--third-party", str(tp), "--dest-root", str(dest),
+    )
+    assert "already present" in again.stdout
+
+
+def test_mano_installer_can_symlink_and_survives_a_missing_left(tmp_path: Path) -> None:
+    source = make_fake_mano(tmp_path / "mano", left=False)
+    tp, dest = tmp_path / "third_party", tmp_path / "weights"
+    result = run(
+        MANO, "--from", str(source), "--link",
+        "--third-party", str(tp), "--dest-root", str(dest),
+    )
+    assert result.returncode == 0, result.stderr
+    right = tp / "WiLoR/mano_data/MANO_RIGHT.pkl"
+    assert right.is_symlink()
+    assert right.resolve() == (source / "MANO_RIGHT.pkl").resolve()
+    assert not (tp / "HaWoR/_DATA/data_left/mano_left/MANO_LEFT.pkl").exists()
+    assert "fix_shapedirs" in result.stdout
+
+
+def test_mano_installer_accepts_the_right_pickle_directly(tmp_path: Path) -> None:
+    source = make_fake_mano(tmp_path / "mano", left=False)
+    tp, dest = tmp_path / "third_party", tmp_path / "weights"
+    result = run(
+        MANO, "--from", str(source / "MANO_RIGHT.pkl"),
+        "--third-party", str(tp), "--dest-root", str(dest),
+    )
+    assert result.returncode == 0, result.stderr
+    assert (dest / "mano/MANO_RIGHT.pkl").is_file()
+
+
 # -------------------------------------------------------------- downloader
 
 
@@ -90,6 +210,7 @@ def test_only_filter_selects_one_backend(tmp_path: Path) -> None:
 
 
 def test_with_repos_prints_the_clone_plan(tmp_path: Path) -> None:
+    # Point THIRD_PARTY at an empty directory so the clones are planned, not skipped.
     result = run(
         DOWNLOAD,
         "--dry-run",
@@ -98,6 +219,7 @@ def test_with_repos_prints_the_clone_plan(tmp_path: Path) -> None:
         "wilor",
         "--dest",
         str(tmp_path / "w"),
+        env={"THIRD_PARTY": str(tmp_path / "third_party")},
     )
     assert result.returncode == 0, result.stderr
     assert "git clone" in result.stdout

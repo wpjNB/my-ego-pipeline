@@ -22,8 +22,18 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="${DEST:-${ROOT}/weights}"
-# VGGT-Omega checkpoints are 4.58 GB on ModelScope; override in tests/small mirrors.
-VGGT_MIN_BYTES="${VGGT_MIN_BYTES:-4000000000}"
+# Measured on the hubs (bytes): the defaults below are ~94 % of the real sizes,
+# which catches truncation and error pages without breaking on a re-upload.
+#   wilor_final.ckpt                  2,564,989,533
+#   hawor.ckpt                        3,267,481,572
+#   infiller.pt                         418,603,497
+#   vggt_omega_1b_416_reproduce.pt    4,576,703,488
+#   model_config.yaml / configuration.json — a few hundred bytes
+# Every floor is overridable, which is what small mirrors and the test suite use.
+WILOR_MIN_BYTES="${WILOR_MIN_BYTES:-2400000000}"
+HAWOR_MIN_BYTES="${HAWOR_MIN_BYTES:-3100000000}"
+INFILLER_MIN_BYTES="${INFILLER_MIN_BYTES:-400000000}"
+VGGT_MIN_BYTES="${VGGT_MIN_BYTES:-4300000000}"
 QUIET=0
 STRICT=0
 
@@ -39,14 +49,17 @@ done
 
 # name|path|min_bytes|expected_format|required(1/0)|sha256(- for unknown)
 ENTRIES=(
-  "WiLoR checkpoint|${DEST}/wilor/wilor_final.ckpt|10000000|torch|1|-"
+  "WiLoR checkpoint|${DEST}/wilor/wilor_final.ckpt|${WILOR_MIN_BYTES}|torch|1|-"
   "WiLoR model config|${DEST}/wilor/model_config.yaml|100|text|1|-"
   "WiLoR detector|${DEST}/wilor/detector.pt|1000000|torch|0|-"
-  "HaWoR checkpoint|${DEST}/hawor/checkpoints/hawor.ckpt|10000000|torch|1|-"
-  "HaWoR infiller|${DEST}/hawor/checkpoints/infiller.pt|1000000|torch|1|-"
+  "HaWoR checkpoint|${DEST}/hawor/checkpoints/hawor.ckpt|${HAWOR_MIN_BYTES}|torch|1|-"
+  "HaWoR infiller|${DEST}/hawor/checkpoints/infiller.pt|${INFILLER_MIN_BYTES}|torch|1|-"
   "HaWoR model config|${DEST}/hawor/checkpoints/model_config.yaml|100|text|0|-"
   "VGGT-Omega|${DEST}/vggt-omega/vggt_omega_1b_*.pt|${VGGT_MIN_BYTES}|torch|1|-"
   "MANO right hand|${DEST}/mano/MANO_RIGHT.pkl|1000000|pickle|0|-"
+  "MANO -> HaWoR right|${ROOT}/third_party/HaWoR/_DATA/data/mano/MANO_RIGHT.pkl|1000000|pickle|0|-"
+  "MANO -> HaWoR left|${ROOT}/third_party/HaWoR/_DATA/data_left/mano_left/MANO_LEFT.pkl|1000000|pickle|0|-"
+  "MANO -> WiLoR|${ROOT}/third_party/WiLoR/mano_data/MANO_RIGHT.pkl|1000000|pickle|0|-"
 )
 
 human() {
@@ -171,6 +184,23 @@ else
 fi
 if [[ "${optional_missing}" -gt 0 ]]; then
     echo "note       : ${optional_missing} optional asset(s) absent (fine unless you need them)"
+fi
+# MANO is the one asset that cannot be scripted, and it is needed in four places
+# (two backends plus this project's own forward kinematics).
+mano_missing=0
+for mano_path in \
+    "${DEST}/mano/MANO_RIGHT.pkl" \
+    "${ROOT}/third_party/HaWoR/_DATA/data/mano/MANO_RIGHT.pkl" \
+    "${ROOT}/third_party/HaWoR/_DATA/data_left/mano_left/MANO_LEFT.pkl" \
+    "${ROOT}/third_party/WiLoR/mano_data/MANO_RIGHT.pkl" ; do
+    [[ -f "${mano_path}" ]] || mano_missing=$((mano_missing + 1))
+done
+if [[ "${mano_missing}" -gt 0 ]]; then
+    echo "note       : MANO is missing in ${mano_missing} of 4 expected locations. Phase 1"
+    echo "             (WiLoR) and Phase 2 (HaWoR) need it, and without it the HOT3D"
+    echo "             reference stays wrist-only. Get the licence-gated model from"
+    echo "             https://mano.is.tue.mpg.de/ then run:"
+    echo "             ./scripts/install_mano.sh --from <dir containing MANO_RIGHT.pkl>"
 fi
 if [[ -f "${DEST}/mano/MANO_RIGHT.pkl" ]]; then
     if [[ -f "${DEST}/mano/MANO_RIGHT.npz" ]]; then

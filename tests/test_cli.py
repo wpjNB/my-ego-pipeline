@@ -110,7 +110,32 @@ def test_pipeline_dry_run_lists_every_stage(stitched_clip: Path) -> None:
     for stage in ("phase0-preprocess", "phase4-stitch", "phase6-refine"):
         assert stage in result.stdout
     assert "environment:" in result.stdout
-    assert "blocked" in result.stdout  # backends are absent in the base env
+    assert "backend mode: real" in result.stdout
+
+
+def test_pipeline_dry_run_reports_missing_backends(
+    stitched_clip: Path, tmp_path: Path
+) -> None:
+    """With the checkouts/weights pointed at an empty tree the stages are blocked."""
+    result = run_script(
+        "scripts/run_pipeline.py",
+        "--config",
+        "configs/macrodata_final.yaml",
+        "--clip",
+        "clip01",
+        "--data-root",
+        str(stitched_clip),
+        "--video",
+        "demo.mp4",
+        "--set",
+        f"paths.third_party={tmp_path / 'third_party'}",
+        "--set",
+        f"paths.weights={tmp_path / 'weights'}",
+        "--dry-run",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "blocked" in result.stdout
+    assert "phase4-stitch" in result.stdout  # backend-free stages stay runnable
 
 
 def test_pipeline_resumes_from_a_stage(stitched_clip: Path) -> None:

@@ -45,16 +45,25 @@ def emit(payload: dict[str, object]) -> None:
 
 
 def backend_available(third_party: Path) -> tuple[bool, str]:
-    """Report whether WiLoR itself can be imported from this interpreter."""
+    """Report whether WiLoR (and its MANO asset) can be imported."""
     checkout = third_party / "WiLoR"
     if not checkout.is_dir():
         return False, f"WiLoR checkout not found at {checkout}"
+    # wilor/models/__init__.py sets MANO.MODEL_PATH='./mano_data/', so WiLoR
+    # cannot construct its MANO layer without the licence-gated model there.
+    mano = checkout / "mano_data" / "MANO_RIGHT.pkl"
+    if not mano.is_file():
+        return False, (
+            f"MANO_RIGHT.pkl not found at {mano} - WiLoR's MANO layer needs it. "
+            "Get it from https://mano.is.tue.mpg.de/ and run "
+            "scripts/install_mano.sh --from <mano dir>"
+        )
     sys.path.insert(0, str(checkout))
     try:
         __import__(DETECTION_MODULE)
     except ImportError as exc:
         return False, f"cannot import '{DETECTION_MODULE}' from {checkout}: {exc}"
-    return True, f"'{DETECTION_MODULE}' importable from {checkout}"
+    return True, f"'{DETECTION_MODULE}' importable from {checkout}, MANO at {mano}"
 
 
 def _first_existing(root: Path, candidates: tuple[str, ...]) -> Path | None:

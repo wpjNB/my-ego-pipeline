@@ -210,6 +210,7 @@ def check_backend_runners(
     weights_root = Path(str(config.get("paths.weights", "weights")))
 
     checks: list[Check] = []
+    environments = _conda_environments()
     for name, spec in specs.items():
         backend = probe_backend(spec, third_party=third_party, weights_root=weights_root)
         runner = invocation.backends_dir / f"{name}_runner.py"
@@ -232,6 +233,25 @@ def check_backend_runners(
                     status="missing",
                     detail="checkout or weights missing, cannot import the backend",
                     fix="see the backends section above",
+                    section="runners",
+                    required_for="gpu",
+                )
+            )
+            continue
+        # ``conda run -n <env> python`` needs that env to exist; say so plainly
+        # instead of surfacing conda's own error.
+        command_template = invocation.python_commands.get(name, ("python",))
+        env_name = _conda_env_of(command_template)
+        if env_name is not None and environments is not None and env_name not in environments:
+            checks.append(
+                Check(
+                    name=f"runner:{name}",
+                    status="missing",
+                    detail=f"backend environment '{env_name}' does not exist yet",
+                    fix=(
+                        f"conda env create -f environment-"
+                        f"{'vggt' if name == 'vggt' else name}.yml"
+                    ),
                     section="runners",
                     required_for="gpu",
                 )
@@ -271,6 +291,45 @@ def check_backend_runners(
             )
         )
     return checks
+
+
+def _conda_env_of(command: Sequence[str]) -> str | None:
+    """Extract ``<env>`` from ``conda run -n <env> python`` style commands."""
+    parts = list(command)
+    if "run" in parts:
+        index = parts.index("run")
+        for flag in ("-n", "--name"):
+            if flag in parts[index:]:
+                position = parts.index(flag, index)
+                if position + 1 < len(parts):
+                    return parts[position + 1]
+    return None
+
+
+def _conda_environments() -> set[str] | None:
+    """Names of the conda environments visible here; ``None`` if conda is absent."""
+    if shutil.which("conda") is None:
+        return None
+    try:
+        proc = subprocess.run(
+            ["conda", "env", "list", "--json"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+    names: set[str] = set()
+    for path in payload.get("envs", []):
+        names.add(Path(str(path)).name)
+    return names
 
 
 def check_data(config_path: str | Path, *, clip: str | None = None) -> list[Check]:

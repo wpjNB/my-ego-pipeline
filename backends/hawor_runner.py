@@ -55,7 +55,15 @@ from ego3d_action.hand.hawor import (  # noqa: E402
 from ego3d_action.io.serialization import load_npz  # noqa: E402
 
 BACKEND_MODULE = "hawor"
-MANO_CANDIDATES = ("_DATA/data/mano/MANO_RIGHT.pkl", "_DATA/data/mano/MANO_RIGHT.npz")
+#: MANO is licence-gated and is *not* part of the checkout. HaWoR loads the right
+#: hand from _DATA/data/mano and the left from _DATA/data_left/mano_left (see
+#: hawor/utils/process.py); the left model is optional because run_mano_left has
+#: a fix_shapedirs workaround, the right one is required.
+MANO_RIGHT_CANDIDATES = ("_DATA/data/mano/MANO_RIGHT.pkl", "_DATA/data/mano/MANO_RIGHT.npz")
+MANO_LEFT_CANDIDATES = (
+    "_DATA/data_left/mano_left/MANO_LEFT.pkl",
+    "_DATA/data_left/mano_left/MANO_LEFT.npz",
+)
 
 
 def emit(payload: dict[str, object]) -> None:
@@ -63,19 +71,27 @@ def emit(payload: dict[str, object]) -> None:
 
 
 def backend_available(third_party: Path) -> tuple[bool, str]:
-    """Report whether HaWoR (and its MANO asset) can be imported."""
+    """Report whether HaWoR (and its MANO assets) can be imported."""
     checkout = third_party / "HaWoR"
     if not checkout.is_dir():
         return False, f"HaWoR checkout not found at {checkout}"
-    mano = next((checkout / rel for rel in MANO_CANDIDATES if (checkout / rel).exists()), None)
-    if mano is None:
-        return False, f"no MANO model under {checkout}/_DATA/data/mano"
+    right = next((checkout / rel for rel in MANO_RIGHT_CANDIDATES if (checkout / rel).exists()), None)
+    left = next((checkout / rel for rel in MANO_LEFT_CANDIDATES if (checkout / rel).exists()), None)
+    if right is None:
+        return False, (
+            "MANO_RIGHT.pkl is missing - HaWoR's run_mano cannot build joints. "
+            "Get it from https://mano.is.tue.mpg.de/ and run "
+            "scripts/install_mano.sh --from <mano dir>"
+        )
     sys.path.insert(0, str(checkout))
     try:
         __import__(BACKEND_MODULE)
     except ImportError as exc:
         return False, f"cannot import '{BACKEND_MODULE}' from {checkout}: {exc}"
-    return True, f"'{BACKEND_MODULE}' importable from {checkout}, MANO at {mano}"
+    detail = f"'{BACKEND_MODULE}' importable from {checkout}, MANO right at {right}"
+    if left is None:
+        detail += " (left model absent - run_mano_left will use fix_shapedirs)"
+    return True, detail
 
 
 def build_hawor_args(args: argparse.Namespace, seq_folder: Path, frames_dir: Path) -> object:

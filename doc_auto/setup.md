@@ -158,19 +158,39 @@ conda run -n ego3d_base python scripts/doctor.py --config configs/macrodata_fina
 
 ### MANO specifically
 
-MANO is licence-gated, so it cannot ship here. Once you have it:
+MANO is licence-gated (register at <https://mano.is.tue.mpg.de/>), so no script
+can download it - but it *is* needed, in **four independent places**:
+
+| Consumer | Expected path | Needed for |
+| --- | --- | --- |
+| HaWoR `run_mano` | `third_party/HaWoR/_DATA/data/mano/MANO_RIGHT.pkl` | Phase 2 right hand |
+| HaWoR `run_mano_left` | `third_party/HaWoR/_DATA/data_left/mano_left/MANO_LEFT.pkl` | Phase 2 left hand |
+| WiLoR (`MANO.MODEL_PATH='./mano_data/'`) | `third_party/WiLoR/mano_data/MANO_RIGHT.pkl` | Phase 1 mesh/3D head |
+| this project's forward kinematics | `weights/mano/MANO_RIGHT.pkl` (+ `.npz`) | 21-joint HOT3D references |
+
+The HaWoR and WiLoR directories are empty after cloning (they hold only
+`.gitkeep` - the model is not redistributable), so the checkouts alone are not
+enough. One command installs your copy everywhere:
 
 ```bash
+./scripts/install_mano.sh --from ~/Downloads/mano          # copy
+./scripts/install_mano.sh --from ~/Downloads/mano --link   # or symlink
+./scripts/install_mano.sh --from ~/Downloads/mano --dry-run
+
+# it also prints (and runs when ego3d_hawor exists) the conversion this project
+# needs for its own forward kinematics:
 conda run -n ego3d_hawor python scripts/convert_mano.py \
-    --input /path/to/MANO_RIGHT.pkl --output-dir weights/mano
+    --input weights/mano/MANO_RIGHT.pkl --output-dir weights/mano
 # then, in configs/hot3d.yaml:  paths.mano_model: weights/mano
 ```
 
 The `.pkl` needs `chumpy` (present in `ego3d_hawor`); the `.npz` needs nothing.
-Only `MANO_RIGHT` is required - the left hand is mirrored automatically and
-flagged as `mano_mirrored` in the reference metadata. Without MANO the pipeline
-still runs: references are wrist-only and the evaluation says so (see
-`doc_auto/runbook.md`).
+`MANO_RIGHT` alone is enough for this project - our FK mirrors it for the left
+hand (`mano_mirrored` in the reference metadata) and HaWoR's `run_mano_left` has
+a `fix_shapedirs` workaround - but passing `MANO_LEFT.pkl` too removes that
+approximation. `./scripts/verify_weights.sh` lists all four locations, and both
+backend runners report the missing file in their `--check`. Without MANO the CPU
+path still works: references stay wrist-only and the evaluation says so.
 
 ## 5. Sample data
 

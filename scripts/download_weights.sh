@@ -45,9 +45,43 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="${DEST:-${ROOT}/weights}"
 THIRD_PARTY="${THIRD_PARTY:-${ROOT}/third_party}"
-# Source bases (override for a mirror; see the header).
-WILOR_BASE="${WILOR_BASE:-https://huggingface.co/spaces/rolpotamias/WiLoR/resolve/main/pretrained_models}"
-HAWOR_BASE="${HAWOR_BASE:-https://huggingface.co/ThunderVVV/HaWoR/resolve/main}"
+# Hugging Face is often unreachable from mainland China, so the mirror that the
+# machine already configured via HF_ENDPOINT (usually https://hf-mirror.com) is
+# tried first, then the official host, then hf-mirror. An explicit WILOR_BASE /
+# HAWOR_BASE (a file:// mirror, a private proxy, ...) replaces the list entirely.
+HF_MIRROR="${HF_MIRROR:-https://hf-mirror.com}"
+WILOR_BASE="${WILOR_BASE:-}"
+HAWOR_BASE="${HAWOR_BASE:-}"
+
+hf_bases() {
+    local -a order=()
+    if [[ -n "${HF_ENDPOINT:-}" && "${HF_ENDPOINT}" != *huggingface.co* ]]; then
+        order+=("${HF_ENDPOINT%/}")
+    fi
+    order+=("https://huggingface.co")
+    order+=("${HF_MIRROR%/}")
+    printf '%s\n' "${order[@]}" | awk '!seen[$0]++'
+}
+
+wilor_sources() {  # wilor_sources <file>
+    if [[ -n "${WILOR_BASE}" ]]; then
+        printf '%s\n' "${WILOR_BASE%/}/$1"
+        return
+    fi
+    while read -r base; do
+        printf '%s\n' "${base}/spaces/rolpotamias/WiLoR/resolve/main/pretrained_models/$1"
+    done < <(hf_bases)
+}
+
+hawor_sources() {  # hawor_sources <file>
+    if [[ -n "${HAWOR_BASE}" ]]; then
+        printf '%s\n' "${HAWOR_BASE%/}/$1"
+        return
+    fi
+    while read -r base; do
+        printf '%s\n' "${base}/ThunderVVV/HaWoR/resolve/main/$1"
+    done < <(hf_bases)
+}
 # VGGT-Omega lives on ModelScope as `facebook/VGGT-Omega` (revision master,
 # FAIR Noncommercial Research License, updated 2026-09-09). The repository holds:
 #   vggt_omega_1b_416_reproduce.pt   4.58 GB   <- what configs/ asks for
@@ -59,8 +93,12 @@ HAWOR_BASE="${HAWOR_BASE:-https://huggingface.co/ThunderVVV/HaWoR/resolve/main}"
 VGGT_MODEL_ID="${VGGT_MODEL_ID:-facebook/VGGT-Omega}"
 VGGT_BASE="${VGGT_BASE:-https://www.modelscope.cn/models/${VGGT_MODEL_ID}/resolve/master}"
 VGGT_FILE="${VGGT_FILE:-vggt_omega_1b_416_reproduce.pt}"
-# 4.58 GB on the hub: 4 GB catches truncation and HTML error pages comfortably.
-VGGT_MIN_BYTES="${VGGT_MIN_BYTES:-4000000000}"
+# Sizes measured on the hubs; each floor is overridable for small mirrors/tests.
+WILOR_MIN_BYTES="${WILOR_MIN_BYTES:-2400000000}"
+HAWOR_MIN_BYTES="${HAWOR_MIN_BYTES:-3100000000}"
+INFILLER_MIN_BYTES="${INFILLER_MIN_BYTES:-400000000}"
+# 4.26 GiB on ModelScope: 4.3 GB catches truncation and HTML error pages.
+VGGT_MIN_BYTES="${VGGT_MIN_BYTES:-4300000000}"
 VGGT_URL="${VGGT_URL:-}"
 ONLY="all"
 DRY_RUN=0
@@ -143,13 +181,17 @@ fetch() {
             ;;
         *)
             if command -v wget >/dev/null 2>&1; then
-                if wget -c --progress=dot:giga -O "${part}" "${url}"; then
+                # --tries/--timeout/--waitretry keep a stalled connection from
+                # hanging a multi-GB download forever; -c resumes what is there.
+                if wget -c --tries=3 --timeout=45 --waitretry=10 --progress=dot:giga \
+                    -O "${part}" "${url}"; then
                     ok=0
                 else
                     fail_reason="wget failed (${url})"
                 fi
             elif command -v curl >/dev/null 2>&1; then
-                if curl -L -C - --fail --progress-bar -o "${part}" "${url}"; then
+                if curl -L -C - --fail --retry 3 --retry-delay 5 --connect-timeout 30 \
+                    --progress-bar -o "${part}" "${url}"; then
                     ok=0
                 else
                     fail_reason="curl failed (${url})"
@@ -227,7 +269,40 @@ clone_repo() {  # clone_repo <url> <dir> [extra git args...]
         return 0
     fi
     echo "  [clone]  ${url} -> ${dir}"
-    git clone "$@" "${url}" "${dir}"
+
+    local -a plain=()
+    local arg
+    for arg in "$@"; do
+        [[ "${arg}" == "--recursive" ]] || plain+=("${arg}")
+    done
+
+    # GitHub and GitLab are both flaky from mainland China (GnuTLS resets mid
+    # pack), so a clone is attempted in three escalating ways before giving up.
+    for attempt in 1 2 3; do
+        case "${attempt}" in
+            1) rm -rf "${dir}"; git clone "$@" "${url}" "${dir}" && return 0 ;;
+            2)  # smaller, protocol-tuned transfer
+                rm -rf "${dir}"
+                git -c http.version=HTTP/1.1 -c http.postBuffer=524288000 \
+                    clone --depth 1 "${plain[@]}" "${url}" "${dir}" && {
+                    echo "  [warn]   ${dir}: shallow clone without submodules" >&2
+                    echo "           finish later with: git -C ${dir} submodule update --init --recursive" >&2
+                    return 0; } ;;
+            3)  # configured mirror (e.g. GITHUB_MIRROR=https://ghproxy.net/)
+                if [[ -n "${GITHUB_MIRROR:-}" ]]; then
+                    rm -rf "${dir}"
+                    git clone --depth 1 "${GITHUB_MIRROR%/}/${url}" "${dir}" && {
+                        echo "  [warn]   ${dir}: cloned via ${GITHUB_MIRROR}" >&2
+                        return 0; }
+                fi ;;
+        esac
+    done
+    if [[ -n "${GITHUB_MIRROR:-}" ]]; then
+        echo "  [FAIL]   cannot clone ${url} (also tried ${GITHUB_MIRROR})" >&2
+    else
+        echo "  [FAIL]   cannot clone ${url}; retry later or set GITHUB_MIRROR" >&2
+    fi
+    return 1
 }
 
 echo "======================================"
@@ -237,38 +312,49 @@ echo " destination : ${DEST}"
 echo " third_party : ${THIRD_PARTY}"
 echo " selection   : ${ONLY}"
 
+status=0
+
 if [[ "${WITH_REPOS}" == "1" ]]; then
     echo
     echo "[0/4] Cloning the backend repositories (--recursive where upstream asks for it)"
-    clone_repo "https://github.com/rolpotamias/WiLoR.git" "${THIRD_PARTY}/WiLoR" --recursive
-    clone_repo "https://github.com/ThunderVVV/HaWoR.git" "${THIRD_PARTY}/HaWoR" --recursive
-    clone_repo "https://github.com/facebookresearch/vggt.git" "${THIRD_PARTY}/VGGT-Omega"
+    clone_repo "https://github.com/rolpotamias/WiLoR.git" "${THIRD_PARTY}/WiLoR" --recursive || status=1
+    clone_repo "https://github.com/ThunderVVV/HaWoR.git" "${THIRD_PARTY}/HaWoR" --recursive || status=1
+    # VGGT-Omega has its own repository; facebookresearch/vggt is the original
+    # release and works as a fallback (VGGT_REPO can point at either).
+    clone_repo "${VGGT_REPO:-https://github.com/facebookresearch/vggt-omega.git}" \
+        "${THIRD_PARTY}/VGGT-Omega" || status=1
 fi
-
-status=0
 
 if wants wilor; then
     echo
     echo "[1/4] WiLoR (Phase 1 detector)"
-    fetch "${DEST}/wilor/wilor_final.ckpt" "WiLoR checkpoint" 10000000 1 \
-        "${WILOR_BASE}/wilor_final.ckpt" || status=1
+    # 2.39 GiB on the hub
+    mapfile -t WILOR_CKPT < <(wilor_sources wilor_final.ckpt)
+    fetch "${DEST}/wilor/wilor_final.ckpt" "WiLoR checkpoint" "${WILOR_MIN_BYTES}" 1 \
+        "${WILOR_CKPT[@]}" || status=1
+    mapfile -t WILOR_CFG < <(wilor_sources model_config.yaml)
     fetch "${DEST}/wilor/model_config.yaml" "WiLoR model config" 100 1 \
-        "${WILOR_BASE}/model_config.yaml" || status=1
+        "${WILOR_CFG[@]}" || status=1
     # The YOLO detector is optional: this project detects with WiLoR's own model.
+    mapfile -t WILOR_DET < <(wilor_sources detector.pt)
     fetch "${DEST}/wilor/detector.pt" "WiLoR detector" 1000000 0 \
-        "${WILOR_BASE}/detector.pt" || status=1
+        "${WILOR_DET[@]}" || status=1
 fi
 
 if wants hawor; then
     echo
     echo "[2/4] HaWoR (Phase 2 hand reconstruction)"
-    fetch "${DEST}/hawor/checkpoints/hawor.ckpt" "HaWoR checkpoint" 10000000 1 \
-        "${HAWOR_BASE}/hawor/checkpoints/hawor.ckpt" || status=1
-    fetch "${DEST}/hawor/checkpoints/infiller.pt" "HaWoR infiller" 1000000 1 \
-        "${HAWOR_BASE}/hawor/checkpoints/infiller.pt" || status=1
+    # 3.04 GiB / 399 MiB on the hub
+    mapfile -t HAWOR_CKPT < <(hawor_sources hawor/checkpoints/hawor.ckpt)
+    fetch "${DEST}/hawor/checkpoints/hawor.ckpt" "HaWoR checkpoint" "${HAWOR_MIN_BYTES}" 1 \
+        "${HAWOR_CKPT[@]}" || status=1
+    mapfile -t HAWOR_INF < <(hawor_sources hawor/checkpoints/infiller.pt)
+    fetch "${DEST}/hawor/checkpoints/infiller.pt" "HaWoR infiller" "${INFILLER_MIN_BYTES}" 1 \
+        "${HAWOR_INF[@]}" || status=1
     # Also ships inside the HaWoR checkout, so a missing mirror copy is not fatal.
+    mapfile -t HAWOR_CFG < <(hawor_sources hawor/model_config.yaml)
     fetch "${DEST}/hawor/checkpoints/model_config.yaml" "HaWoR model config" 100 0 \
-        "${HAWOR_BASE}/hawor/model_config.yaml" || status=1
+        "${HAWOR_CFG[@]}" || status=1
 fi
 
 if wants vggt; then
@@ -288,6 +374,7 @@ if wants vggt; then
         VGGT_SOURCES+=("${VGGT_BASE}/vggt_omega_1b_512.pt")
     fi
 
+    # 4.26 GiB on ModelScope
     if fetch "${DEST}/vggt-omega/${VGGT_FILE}" "VGGT-Omega ${VGGT_FILE}" "${VGGT_MIN_BYTES}" 1 \
         "${VGGT_SOURCES[@]}"; then
         :

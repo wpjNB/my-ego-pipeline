@@ -1,5 +1,51 @@
 # Changelog
 
+## 2026-09-24 21:45 (+08:00) - weights downloaded for real; MANO is needed in four places
+
+First run with real network access (the sandbox blocks DNS, so the download was
+run unsandboxed at the author's request):
+
+| asset | size | source |
+| --- | --- | --- |
+| `wilor_final.ckpt` | 2.39 GiB | hf-mirror (resumed from a 407 MB partial file) |
+| `model_config.yaml` / `detector.pt` | 2 KiB / 51.1 MiB | hf-mirror |
+| `hawor.ckpt` / `infiller.pt` / `model_config.yaml` | 3.04 GiB / 399 MiB / 3 KiB | hf-mirror |
+| `vggt_omega_1b_416_reproduce.pt` (+ `configuration.json`, `LICENSE.txt`) | 4.26 GiB / 64 B / 12 KiB | ModelScope CDN |
+
+`./scripts/verify_weights.sh` now reports *all required weights present and
+readable* (exit 0). The three backend checkouts are cloned too
+(`WiLoR` 23 MB, `HaWoR` 162 MB, `VGGT-Omega` 88 MB).
+
+Findings and fixes from doing it for real:
+
+* **huggingface.co is unreachable from this network, hf-mirror.com works.**
+  `download_weights.sh` now orders sources by `HF_ENDPOINT` (already set on this
+  machine), then the official host, then `hf-mirror`; `fetch()` takes several
+  URLs and tries them in order, so a mirror needs no code change.
+* **The real file names and sizes** replace the earlier estimates, and every
+  size floor is now measured + env-overridable (`WILOR_MIN_BYTES`,
+  `HAWOR_MIN_BYTES`, `INFILLER_MIN_BYTES`, `VGGT_MIN_BYTES`).
+* **VGGT-Omega's package is `vggt_omega`, not `vggt`**; its decoder is
+  `encoding_to_camera` and the loader is
+  `vggt_omega.utils.load_fn.load_and_preprocess_images`. Its `reproduction.md`
+  confirms the 416 reproduction checkpoint is the recommended one for
+  benchmarking and that inference must use `image_resolution=416` - the project
+  configuration was already right.
+* **MANO is needed in four independent places** (HaWoR right, HaWoR left, WiLoR's
+  `mano_data/`, our own FK). The checkouts ship only `.gitkeep`, so
+  `scripts/install_mano.sh` installs a licensed copy into all four (copy, or
+  `--link`), and both backend runners now report the missing file in `--check`.
+* git clone robustness: a flaky GnuTLS failure (mid-pack) no longer aborts the
+  run - clones are retried with HTTP/1.1 + `--depth 1`, then a `GITHUB_MIRROR`
+  if set; the VGGT-Omega repository URL is the real one
+  (`facebookresearch/vggt-omega`).
+* `doctor.py` now diagnoses the remaining gap precisely: with the checkouts and
+  weights in place it reports `backend:WiLoR/HaWoR/VGGT-Omega: ok` and, for the
+  runners, `backend environment 'ego3d_wilor' does not exist yet` plus the exact
+  `conda env create -f environment-wilor.yml` command, instead of conda's raw
+  error.
+* Test suite: **276 passed**.
+
 ## 2026-09-24 10:20 (+08:00) - real VGGT-Omega source (ModelScope) wired in
 
 The VGGT-Omega checkpoint URL was a placeholder; the author pointed the project
