@@ -57,6 +57,7 @@ ENTRIES=(
   "HaWoR model config|${DEST}/hawor/checkpoints/model_config.yaml|100|text|0|-"
   "VGGT-Omega|${DEST}/vggt-omega/vggt_omega_1b_*.pt|${VGGT_MIN_BYTES}|torch|1|-"
   "MANO right hand|${DEST}/mano/MANO_RIGHT.pkl|1000000|pickle|0|-"
+  "MANO left hand|${DEST}/mano/MANO_LEFT.pkl|1000000|pickle|0|-"
   "MANO -> HaWoR right|${ROOT}/third_party/HaWoR/_DATA/data/mano/MANO_RIGHT.pkl|1000000|pickle|0|-"
   "MANO -> HaWoR left|${ROOT}/third_party/HaWoR/_DATA/data_left/mano_left/MANO_LEFT.pkl|1000000|pickle|0|-"
   "MANO -> WiLoR|${ROOT}/third_party/WiLoR/mano_data/MANO_RIGHT.pkl|1000000|pickle|0|-"
@@ -185,18 +186,20 @@ fi
 if [[ "${optional_missing}" -gt 0 ]]; then
     echo "note       : ${optional_missing} optional asset(s) absent (fine unless you need them)"
 fi
-# MANO is the one asset that cannot be scripted, and it is needed in four places
-# (two backends plus this project's own forward kinematics).
+# MANO is the one asset that cannot be scripted, and it is needed in five places
+# (two backends plus this project's own forward kinematics, which reads
+# weights/mano/MANO_RIGHT.pkl and mirrors it unless MANO_LEFT.pkl is there too).
 mano_missing=0
 for mano_path in \
     "${DEST}/mano/MANO_RIGHT.pkl" \
+    "${DEST}/mano/MANO_LEFT.pkl" \
     "${ROOT}/third_party/HaWoR/_DATA/data/mano/MANO_RIGHT.pkl" \
     "${ROOT}/third_party/HaWoR/_DATA/data_left/mano_left/MANO_LEFT.pkl" \
     "${ROOT}/third_party/WiLoR/mano_data/MANO_RIGHT.pkl" ; do
     [[ -f "${mano_path}" ]] || mano_missing=$((mano_missing + 1))
 done
 if [[ "${mano_missing}" -gt 0 ]]; then
-    echo "note       : MANO is missing in ${mano_missing} of 4 locations. Phase 2 (HaWoR)"
+    echo "note       : MANO is missing in ${mano_missing} of 5 locations. Phase 2 (HaWoR)"
     echo "             needs the HaWoR ones, this project's forward kinematics needs"
     echo "             weights/mano, and the WiLoR copy is only used by WiLoR's own 3D"
     echo "             model (Phase 1 needs just detector.pt). Get the licence-gated model"
@@ -205,7 +208,8 @@ if [[ "${mano_missing}" -gt 0 ]]; then
 fi
 if [[ -f "${DEST}/mano/MANO_RIGHT.pkl" ]]; then
     if [[ -f "${DEST}/mano/MANO_RIGHT.npz" ]]; then
-        echo "note       : MANO converted to .npz - remember paths.mano_model in configs/hot3d.yaml"
+        echo "note       : MANO converted to .npz - paths.mano_model already points at"
+        echo "             ${DEST#"${ROOT}/"}/mano (configs/hot3d.yaml, configs/macrodata_final.yaml)"
     else
         echo "note       : MANO_RIGHT.pkl not converted yet - python scripts/convert_mano.py"
     fi

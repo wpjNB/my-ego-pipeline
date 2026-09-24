@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 
 from ego3d_action.runtime.doctor import (
     Check,
@@ -75,6 +76,33 @@ def test_data_checks_flag_a_missing_mano(tmp_path: Path) -> None:
     assert by_name["MANO model"].status == "warn"
     assert by_name["clip:frames"].status == "warn"
     assert by_name["clip:detection"].fix
+
+
+def _config_pointing_at(tmp_path: Path, mano: Path) -> Path:
+    """macrodata_final.yaml with paths.mano_model rewritten, still valid."""
+    payload = yaml.safe_load(Path("configs/macrodata_final.yaml").read_text(encoding="utf-8"))
+    payload["paths"]["mano_model"] = str(mano)
+    path = tmp_path / "mano.yaml"
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    return path
+
+
+def test_data_checks_accept_a_configured_mano_model(tmp_path: Path) -> None:
+    """Both hands ship in weights/mano; a wired-up config turns the check green."""
+    mano = tmp_path / "mano"
+    mano.mkdir()
+    for name in ("MANO_RIGHT.pkl", "MANO_LEFT.pkl"):
+        (mano / name).write_bytes(b"\x80" + b"p" * 2_000_000)
+
+    checks = check_data(_config_pointing_at(tmp_path, mano))
+    by_name = {check.name: check for check in checks}
+    assert by_name["MANO model"].status == "ok"
+    assert str(mano) in by_name["MANO model"].detail
+
+    gone = tmp_path / "not-downloaded"
+    missing = {check.name: check for check in check_data(_config_pointing_at(tmp_path, gone))}
+    assert missing["MANO model"].status == "missing"
+    assert missing["MANO model"].fix
 
 
 def test_summarise_verdicts_and_exit_codes() -> None:

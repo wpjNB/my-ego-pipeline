@@ -1,6 +1,6 @@
 # Runbook: how to run this project
 
-Last modified: 2026-09-23 18:25 (+08:00)
+Last modified: 2026-09-24 22:12 (+08:00)
 
 Two paths. Path A needs no weights and no GPU; Path B is the real pipeline.
 Start every session with the audit:
@@ -19,11 +19,15 @@ records `backend_mode: mock`.
 
 ```bash
 make env && make install      # once
-make test                     # 249 tests, ~13 s
+make test                     # 286 tests, ~20 s
 make demo                     # Phases 0-7 on a synthetic 300-frame clip, ~10 s
 make sample                   # import HOT3D sample episode 0 + ground-truth viewer
 WITH_MOCK=1 bash scripts/demo_hot3d_sample.sh   # Phases 1-6 on real 512x512 footage
 ```
+
+`make sample` now writes a **21-joint** reference (`hand_joints: mano_fk`,
+`mano_mirrored: {left: false, right: false}`) because `weights/mano` holds both
+official models and `configs/hot3d.yaml` points at it.
 
 What `make demo` prints on this machine (CPU, mock):
 
@@ -115,7 +119,8 @@ for the whole chain in one command.
 
 ```bash
 $RUN scripts/import_lerobot.py --config configs/hot3d.yaml --clip $CLIP --data-root data/hot3d \
-     --root data/samples/lerobot_v3 --episode 0 [--mano-model weights/mano]
+     --root data/samples/lerobot_v3 --episode 0   # MANO comes from paths.mano_model
+     # (weights/mano, already configured); add --no-mano for a wrist-only reference
 $RUN scripts/evaluate_hot3d.py --config configs/hot3d.yaml --clip $CLIP \
      --prediction data/hot3d/$CLIP/trajectory/trajectory.npz \
      --ground-truth data/hot3d/$CLIP/trajectory/ground_truth.npz \

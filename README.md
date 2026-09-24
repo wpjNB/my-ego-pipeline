@@ -9,21 +9,29 @@ intermediate artefacts, the coordinate conventions, the window stitching, the
 post-processing and the evaluation - and treats WiLoR, HaWoR and VGGT-Omega as
 external backends that run in their own environments.
 
-## Status of this checkout: code yes, weights no
+## Status of this checkout
 
-This repository ships **code, tests, the HOT3D sample dataset and a synthetic
-stand-in for the models - but no model weights**. That is the honest answer to
-"are the checkpoints included?": they are not, and neither is the MANO mesh
-model (its licence is separate). What is present:
+The repository ships **code and tests, no weights** - `weights/`, `data/` and
+`third_party/` are git-ignored, so a clone is code-only. This particular
+checkout has them all on disk, fetched with the scripts below:
 
-| Asset | Present? | Where |
+| Asset | On this checkout | Where |
 | --- | --- | --- |
-| Orchestrator env `ego3d_base` | yes | `environment-base.yml`, 249 tests green |
+| Orchestrator env `ego3d_base` | yes | `environment-base.yml`, 286 tests green |
 | HOT3D sample (8 clips, 3600 frames) | yes | `data/samples/lerobot_v3` (git-ignored) |
 | Synthetic MANO stand-in | yes, generated | `python scripts/make_synthetic_mano.py` |
-| WiLoR checkpoint + the other two | **no** | `weights/wilor`, `weights/hawor/checkpoints`, `weights/vggt-omega` |
-| Backend checkouts | **no** | `third_party/{WiLoR,HaWoR,VGGT-Omega}` |
-| MANO model (for 21-joint references) | **no** | `weights/mano`, licence-gated |
+| WiLoR checkpoint + detector | yes (2.39 GiB + 51 MiB) | `weights/wilor` |
+| HaWoR checkpoint + infiller | yes (3.04 GiB + 399 MiB) | `weights/hawor/checkpoints` |
+| VGGT-Omega 416 reproduction | yes (4.26 GiB) | `weights/vggt-omega` |
+| Backend checkouts | yes | `third_party/{WiLoR,HaWoR,VGGT-Omega}` |
+| MANO model, **both hands** (21-joint references) | yes, installed | `weights/mano` + HaWoR/WiLoR copies |
+| Backend conda envs (`ego3d_wilor`/`hawor`/`vggt`) | **no** | `environment-*.yml`, need a GPU |
+
+`weights/` alone is 10.8 GiB; `./scripts/verify_weights.sh` checks each file's
+size floor and container magic and prints `all required weights present and
+readable`. What is left is the GPU side: the three backend environments and the
+first real Phase 1-3 run (see the "what is missing" section of
+[doc_auto/implementation-status.md](doc_auto/implementation-status.md)).
 
 Ask the project itself at any time - it never guesses:
 
@@ -37,10 +45,17 @@ conda run -n ego3d_base python scripts/doctor.py --config configs/macrodata_fina
 
 ```
 [backends]
-  MISS  backend:WiLoR       checkout at third_party/WiLoR; weights at weights/wilor
-  ...
+  ok    backend:WiLoR        checkout + weights present
+  ok    backend:HaWoR        checkout + weights present
+  ok    backend:VGGT-Omega   checkout + weights present
+
+[runners]
+  MISS  runner:wilor         backend environment 'ego3d_wilor' does not exist yet
+  MISS  runner:hawor         backend environment 'ego3d_hawor' does not exist yet
+  MISS  runner:vggt          backend environment 'ego3d_vggt' does not exist yet
+
 CPU path: ready (tests, mock pipeline, reference import, evaluation)
-GPU path: not complete (4 missing, 1 warnings) - see doc_auto/setup.md
+GPU path: not complete (4 missing, 0 warnings) - see doc_auto/setup.md
 ```
 
 Full instructions: **[doc_auto/setup.md](doc_auto/setup.md)** (environments,
@@ -138,29 +153,28 @@ with the reference camera:
 
 ![ground truth on the sample](/home/wpj/ego/my-ego-pipeline/data/hot3d/hot3d_ep000/visualization/gt_vs_pred_stills/000150.png)
 
-### Wrist-only by default, 21 joints with MANO
+### 21 joints with MANO (or wrist-only without it)
 
 The sample stores a wrist pose plus 15 joint rotations, not 21 joint positions.
 Turning those into fingertips needs the MANO mesh model
 (`v_template`/`shapedirs`/`J_regressor`/`weights`), which is licence-gated and
-not bundled. Two honest modes:
+never committed. Two honest modes:
 
-* **default - wrist-only.** Joints 1..20 are written as `NaN`, the metadata says
-  `hand_joints: "wrist_only"`, and the evaluation reports
+* **21 joints - with MANO (this checkout).** Both official models live in
+  `weights/mano` and both real configs set `paths.mano_model: weights/mano`, so
+  `make sample` and `scripts/import_lerobot.py` write all 21 joints from numpy
+  forward kinematics (`hand/mano_model.py`: shape blend shapes, pose blend
+  shapes, linear blend skinning, the standard 21-landmark mapping). The wrist
+  stays exactly where the dataset put it, missing frames stay missing, and the
+  left hand uses `MANO_LEFT` verbatim (`mano_mirrored: {left: false, right: false}`
+  - if only the right model exists the left is mirrored and the metadata says
+  so). Verified on the sample episode: 434/450 left and 450/450 right frames
+  carry 21 finite joints.
+* **wrist-only - without MANO.** Joints 1..20 are written as `NaN`, the metadata
+  says `hand_joints: "wrist_only"`, and the evaluation reports
   `referenced joints: 4.7 %` plus a note. You get a wrist-level Action-MPJPE
-  instead of a silently fabricated average.
-* **21 joints - with MANO.** Convert your licensed pickle once
-  (`python scripts/convert_mano.py --input MANO_RIGHT.pkl ...`), then:
-
-  ```bash
-  MANO_MODEL=weights/mano make sample
-  ```
-
-  `hand_xyz_world` then carries all 21 joints from numpy forward kinematics
-  (`hand/mano_model.py`: shape blend shapes, pose blend shapes, linear blend
-  skinning, the standard 21-landmark mapping), the wrist stays exactly where the
-  dataset put it, and missing frames stay missing. A right-hand model is enough:
-  the left is mirrored and `mano_mirrored` is recorded.
+  instead of a silently fabricated average. Force this with `--no-mano`, or
+  `NO_MANO=1 bash scripts/demo_hot3d_sample.sh`.
 
   No MANO model at hand? `python scripts/make_synthetic_mano.py` fabricates a
   structural stand-in so the same code path can be exercised end to end - its

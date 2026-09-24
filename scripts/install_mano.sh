@@ -7,15 +7,17 @@
 #   ./scripts/install_mano.sh --from ~/Downloads/mano --dry-run
 #
 # MANO is licence-gated (https://mano.is.tue.mpg.de/), so it cannot be
-# downloaded by a script - this one only places files you already have. Four
-# independent consumers look for it under four different paths:
+# downloaded by a script - this one only places files you already have. Three
+# independent consumers look for it under six different paths:
 #
 #   third_party/HaWoR/_DATA/data/mano/MANO_RIGHT.pkl           HaWoR run_mano  (required)
 #   third_party/HaWoR/_DATA/data_left/mano_left/MANO_LEFT.pkl  HaWoR run_mano_left
-#   weights/mano/MANO_RIGHT.pkl                                our FK / convert_mano.py
+#   weights/mano/MANO_RIGHT.pkl                                our FK / convert_mano.py (required)
+#   weights/mano/MANO_LEFT.pkl                                 our FK, left hand verbatim
 #   third_party/WiLoR/mano_data/MANO_RIGHT.pkl                 only if you also run
 #                                                              WiLoR's own 3D model
 #                                                              (Phase 1 needs just the detector)
+#   third_party/WiLoR/mano_data/MANO_LEFT.pkl                  same, left hand
 #
 # --from may be:
 #   * the official archive (mano_v1_2.zip) - it is unpacked and the two pickles
@@ -171,8 +173,9 @@ echo
 echo "  conda run -n ego3d_hawor python scripts/convert_mano.py \\"
 echo "      --input ${DEST_ROOT}/mano/MANO_RIGHT.pkl --output-dir ${DEST_ROOT}/mano"
 echo
-echo "  # then, to get 21-joint HOT3D references instead of wrist-only ones:"
-echo "  #   configs/hot3d.yaml ->  paths.mano_model: weights/mano"
+echo "  # configs/hot3d.yaml and configs/macrodata_final.yaml already set"
+echo "  #   paths.mano_model: weights/mano   -> 21-joint references instead of"
+echo "  #   wrist-only ones, so nothing else is required."
 
 if [[ -f "${DEST_ROOT}/mano/MANO_RIGHT.npz" ]]; then
     echo "  (a .npz is already present - nothing to convert)"

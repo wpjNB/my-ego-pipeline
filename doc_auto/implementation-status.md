@@ -1,9 +1,15 @@
 # Implementation status
 
-Last modified: 2026-09-23 18:05 (+08:00)
+Last modified: 2026-09-24 22:12 (+08:00)
 
-Test suite: **249 passed in ~13 s** on the CPU-only laptop
+Test suite: **286 passed in ~20 s** on the CPU-only laptop
 (`conda run -n ego3d_base python -m pytest -q`).
+
+Asset state on this checkout: all three backends' weights are downloaded and
+verified (10.8 GB), the three repositories are cloned, and MANO is installed for
+both hands at every path the pipeline reads. What is *not* set up yet are the
+three backend conda environments (`ego3d_wilor`, `ego3d_hawor`, `ego3d_vggt`) -
+the first real Phase 1-3 run needs them and a GPU.
 
 ## Complete and tested (CPU)
 
@@ -51,9 +57,10 @@ models and marks every artefact with `backend_mode: mock`.
 1. Run Phases 1-3 on one GPU clip, then check the debug videos and `--check`
    output; expect small API drift (WiLoR's output fields, VGGT's pose decoding
    helper) and fix it against the installed versions.
-2. Convert a licensed MANO model (`scripts/convert_mano.py`) so the reference is
-   21-joint instead of wrist-only.
-3. Fill the real-data ablation table (`doc_auto/ablation.md`) from
+2. Fill the real-data ablation table (`doc_auto/ablation.md`) from
    `scripts/evaluate_hot3d.py` outputs.
-4. Decide whether HaWoR's infiller SLAM step can be skipped (it currently costs
+3. Decide whether HaWoR's infiller SLAM step can be skipped (it currently costs
    a full SLAM run per clip just to carry coordinates for Phase 2).
+4. Fetch HaWoR's `eigen` submodule (`git -C third_party/HaWoR submodule update
+   --init --recursive`) - gitlab refused the recursive clone of that one and
+   DROID-SLAM builds against it.

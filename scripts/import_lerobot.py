@@ -13,8 +13,10 @@ Produces the usual clip layout plus a reference trajectory:
     data/hot3d/<clip>/trajectory/ground_truth.json
 
 See ``ego3d_action.datasets.hot3d_gt`` for exactly which dataset field maps to
-which trajectory field - and why the reference carries the wrist exactly but
-leaves joints 1..20 as NaN (no MANO mesh model available).
+which trajectory field. The reference carries the wrist exactly; joints 1..20
+come from MANO forward kinematics when ``paths.mano_model`` (or ``--mano-model``)
+points at the licence-gated model, and stay NaN without it - ``--no-mano`` forces
+the wrist-only mode.
 """
 
 from __future__ import annotations
@@ -75,7 +77,13 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         else:
-            print("no MANO model configured -> wrist-only reference (see --mano-model)")
+            if args.no_mano:
+                print("--no-mano: wrist-only reference (joints 1..20 stay NaN)")
+            else:
+                print(
+                    "no MANO model configured -> wrist-only reference "
+                    "(set paths.mano_model or pass --mano-model)"
+                )
         episode = convert_episode(dataset, args.episode, mano_models=mano_models)
         print(
             f"episode {args.episode}: {episode.num_frames} frames, "

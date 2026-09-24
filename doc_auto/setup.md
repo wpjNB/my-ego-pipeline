@@ -1,6 +1,6 @@
 # Setup: environments, checkouts and weights
 
-Last modified: 2026-09-23 18:20 (+08:00)
+Last modified: 2026-09-24 22:12 (+08:00)
 
 ## TL;DR - how to find out what is missing on any machine
 
@@ -30,7 +30,7 @@ Phases 0, 1-tracking, 4, 5, 6 and 7 are pure numpy/scipy and need **no GPU**.
 ```bash
 conda env create -f environment-base.yml      # or: make env
 conda run -n ego3d_base python -m pip install --no-build-isolation -e .   # or: make install
-conda run -n ego3d_base python -m pytest -q   # or: make test   -> 249 tests
+conda run -n ego3d_base python -m pytest -q   # or: make test   -> 286 tests
 ```
 
 Contents: python 3.11, numpy, scipy, opencv, pyyaml, pyarrow + pandas (LeRobot
@@ -166,8 +166,13 @@ needed - and the answer is *not* "everywhere":
 | --- | --- | --- |
 | HaWoR `run_mano` | `third_party/HaWoR/_DATA/data/mano/MANO_RIGHT.pkl` | **Phase 2 (required)** |
 | HaWoR `run_mano_left` | `third_party/HaWoR/_DATA/data_left/mano_left/MANO_LEFT.pkl` | Phase 2 left hand |
-| this project's forward kinematics | `weights/mano/MANO_RIGHT.pkl` (+ `.npz`) | 21-joint HOT3D references |
-| WiLoR (`MANO.MODEL_PATH='./mano_data/'`) | `third_party/WiLoR/mano_data/MANO_RIGHT.pkl` | only for WiLoR's *own* 3D model - Phase 1 uses just `detector.pt` |
+| this project's forward kinematics | `weights/mano/MANO_{RIGHT,LEFT}.pkl` (+ `.npz`) | 21-joint HOT3D references |
+| WiLoR (`MANO.MODEL_PATH='./mano_data/'`) | `third_party/WiLoR/mano_data/MANO_{RIGHT,LEFT}.pkl` | only for WiLoR's *own* 3D model - Phase 1 uses just `detector.pt` |
+
+**On this checkout MANO is already installed** (both hands, at every path in the
+table) - `./scripts/verify_weights.sh` prints `ok` for all five MANO rows. This
+section is what a fresh clone has to repeat; the download itself is behind a
+login, so it stays a manual step.
 
 **Phase 1 needs no MANO and no `wilor_final.ckpt`**: WiLoR's demo separates the
 YOLO detector (`detector.pt`, boxes + handedness) from the 3D model
@@ -188,8 +193,11 @@ enough. One command installs your copy everywhere:
 # needs for its own forward kinematics:
 conda run -n ego3d_hawor python scripts/convert_mano.py \
     --input weights/mano/MANO_RIGHT.pkl --output-dir weights/mano
-# then, in configs/hot3d.yaml:  paths.mano_model: weights/mano
 ```
+
+The script derives `MANO_LEFT` from `MANO_LEFT.pkl` as well, and both
+`configs/hot3d.yaml` and `configs/macrodata_final.yaml` already set
+`paths.mano_model: weights/mano`, so no config edit is needed afterwards.
 
 **No chumpy is needed.** The official archive wraps only ``shapedirs`` in a
 chumpy ``Select``; ``hand/mano_model.py::read_mano_pickle`` unpickles it with a
@@ -200,14 +208,18 @@ and Python <= 3.10, which is incompatible with the orchestrator environment.
 
 `MANO_RIGHT` alone is enough for this project - our FK mirrors it for the left
 hand (`mano_mirrored` in the reference metadata) and HaWoR's `run_mano_left` has
-a `fix_shapedirs` workaround - but passing `MANO_LEFT.pkl` too removes that
-approximation. `./scripts/verify_weights.sh` lists all four locations, and both
-backend runners report the missing file in their `--check`. Without MANO the CPU
-path still works: references stay wrist-only and the evaluation says so.
+a `fix_shapedirs` workaround - but installing `MANO_LEFT.pkl` too removes that
+approximation, which is what this checkout does. `./scripts/verify_weights.sh`
+lists all five locations and `scripts/doctor.py` turns green only when the
+configured `paths.mano_model` exists; both backend runners report the missing
+file in their `--check`. Without MANO the CPU path still works: references stay
+wrist-only and the evaluation says so.
 
-Once `weights/mano` holds the models, `configs/hot3d.yaml` already points at it
-(`paths.mano_model: weights/mano`), so `scripts/import_lerobot.py` writes 21-joint
-references; `--no-mano` falls back to wrist-only for a quick check.
+With the models in `weights/mano` (and `paths.mano_model` pointing at it),
+`scripts/import_lerobot.py` writes **21-joint** references from real forward
+kinematics - verified on the sample episode: 434/450 left frames and 450/450
+right frames carry 21 finite joints, and `mano_mirrored` is `False` on both
+sides. `--no-mano` falls back to wrist-only for a quick check.
 
 ## 5. Sample data
 

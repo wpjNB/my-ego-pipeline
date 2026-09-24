@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import zipfile
@@ -376,6 +377,31 @@ def test_verify_notes_an_unconverted_mano(tmp_path: Path) -> None:
     (dest / "mano" / "MANO_RIGHT.npz").write_bytes(b"PK\x03\x04" + b"n" * 4096)
     converted = run(VERIFY, "--dest", str(dest))
     assert "paths.mano_model" in converted.stdout
+
+
+def test_verify_audits_both_mano_hands(tmp_path: Path) -> None:
+    """The left model matters: our FK reads it verbatim instead of mirroring."""
+    dest = tmp_path / "weights"
+    fill_required_tree(dest)
+    (dest / "mano").mkdir(parents=True)
+    (dest / "mano" / "MANO_RIGHT.pkl").write_bytes(b"\x80" + b"r" * 2_000_000)
+
+    only_right = run(VERIFY, "--dest", str(dest))
+    assert "MANO left hand" in only_right.stdout  # the row exists even when absent
+    assert str(dest / "mano" / "MANO_LEFT.pkl") in only_right.stdout
+    assert "of 5 locations" in only_right.stdout  # never "of 4" again
+
+    (dest / "mano" / "MANO_LEFT.pkl").write_bytes(b"\x80" + b"l" * 2_000_000)
+    both = run(VERIFY, "--dest", str(dest))
+    assert re.search(r"MANO left hand\s+ok\s+\S+\s+.*MANO_LEFT\.pkl", both.stdout)
+
+
+def test_verify_lists_the_mano_left_path_when_nothing_is_installed(tmp_path: Path) -> None:
+    dest = tmp_path / "weights"
+    fill_required_tree(dest)
+    result = run(VERIFY, "--dest", str(dest))
+    assert "MANO right hand" in result.stdout
+    assert "MANO left hand" in result.stdout
 
 
 def test_verify_accepts_either_published_vggt_file(tmp_path: Path) -> None:

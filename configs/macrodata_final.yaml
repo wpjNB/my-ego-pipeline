@@ -11,6 +11,8 @@ paths:
   weights: weights
   outputs: outputs
   backends: backends
+  mano_model: weights/mano   # MANO_{RIGHT,LEFT}.pkl from scripts/install_mano.sh
+                             # -> 21-joint HOT3D references instead of wrist-only
 
 backends:
   mode: real               # real | mock  (mock = deterministic stand-in, never a model)

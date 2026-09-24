@@ -36,6 +36,13 @@ def test_macrodata_final_matches_the_reference_table() -> None:
     assert config.get("evaluation.chunk_seconds") == 1.0
 
 
+@pytest.mark.parametrize("name", ("macrodata_final.yaml", "hot3d.yaml"))
+def test_the_hand_reference_configs_point_at_the_installed_mano(name: str) -> None:
+    """Both configs that build 21-joint references must find weights/mano."""
+    config = load_config(Path("configs") / name)
+    assert config.get("paths.mano_model") == "weights/mano"
+
+
 def test_missing_config_raises() -> None:
     with pytest.raises(ConfigError):
         load_config("configs/does-not-exist.yaml")

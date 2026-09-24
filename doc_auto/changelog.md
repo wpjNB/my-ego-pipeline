@@ -1,6 +1,34 @@
 # Changelog
 
-## 2026-09-24 22:20 (+08:00) - MANO installed; read the official pickle without chumpy
+## 2026-09-24 22:12 (+08:00) - MANO is wired into both hands and both real configs
+
+`weights/mano` now holds both official models, so the 21-joint reference uses
+`MANO_RIGHT.npz` **and** `MANO_LEFT.npz` verbatim - `mano_mirrored` is `False`
+for both sides in the fresh sample import (it used to mirror the left hand from
+the right model). Two follow-ups so nothing stays stale:
+
+* `configs/macrodata_final.yaml` gained `paths.mano_model: weights/mano`; the
+  reference blog config pointed nowhere, so `scripts/doctor.py` reported
+  "MANO model not configured -> references are wrist-only" even with the model
+  on disk. `hot3d.yaml` already had it.
+* `scripts/verify_weights.sh` audits `weights/mano/MANO_LEFT.pkl` too (it checked
+  only the right one, plus HaWoR's two copies and WiLoR's), and the
+  missing-MANO note counts five locations instead of four.
+
+Also: every `scripts/*.py`, `scripts/*.sh` and `backends/*.py` is now
+executable, so the `./scripts/...` invocations in the README and runbook work
+as written (they were `-rw-rw-r--`).
+
+Verification on the real sample clip: importing `hot3d_ep000` with the
+configured MANO writes 21 finite joints in **434/450** left frames and
+**450/450** right frames, with median bone lengths that are anatomically right
+(wrist->index MCP 32.4 mm, index MCP->PIP 21.5 mm, PIP->DIP 23.7 mm,
+thumb chain 33.0/37.8/30.0 mm). `scripts/doctor.py` now ends with "CPU path:
+ready" and a single GPU-path gap (the backend environments).
+
+Test suite: **286 passed**.
+
+## 2026-09-24 21:57 (+08:00) - MANO installed; read the official pickle without chumpy
 
 The author downloaded `mano_v1_2.zip` from the official site (the download is
 behind a login, so no script can fetch it). `scripts/install_mano.sh --from
@@ -36,7 +64,7 @@ hands - it is only meaningful in the rest pose, so it now runs once per model vi
 
 Test suite: **281 passed**.
 
-## 2026-09-24 22:10 (+08:00) - backend runners rewritten against the real sources
+## 2026-09-24 21:38 (+08:00) - backend runners rewritten against the real sources
 
 With the checkouts finally on disk, every call was re-derived from the code
 instead of from documentation, and three of my assumptions were wrong:
@@ -66,7 +94,7 @@ updated to say who really needs it.
 
 Test suite: **276 passed**.
 
-## 2026-09-24 21:45 (+08:00) - weights downloaded for real; MANO is needed in four places
+## 2026-09-24 21:33 (+08:00) - weights downloaded for real; MANO is needed in four places
 
 First run with real network access (the sandbox blocks DNS, so the download was
 run unsandboxed at the author's request):
