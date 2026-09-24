@@ -273,6 +273,7 @@ def detect_clip(
     weights_root: str | Path,
     device: str = "auto",
     batch_size: int = 4,
+    detector_confidence: float = 0.1,
     width: int | None = None,
     height: int | None = None,
     image_format: str = "jpg",
@@ -316,6 +317,10 @@ def detect_clip(
         str(third_party),
         "--weights",
         str(weights_root),
+        # Keep the detector threshold below the tracker's anchor threshold
+        # (0.75) so gap-recovery candidates survive the detector.
+        "--conf",
+        str(detector_confidence),
     ]
     if num_frames is not None:
         args += ["--num-frames", str(num_frames)]

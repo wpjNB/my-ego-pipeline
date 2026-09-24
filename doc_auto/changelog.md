@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-09-24 22:10 (+08:00) - backend runners rewritten against the real sources
+
+With the checkouts finally on disk, every call was re-derived from the code
+instead of from documentation, and three of my assumptions were wrong:
+
+* **Phase 1 needs WiLoR's detector, not its model.** WiLoR's demo splits
+  `YOLO('detector.pt')` (boxes + handedness) from `load_wilor(wilor_final.ckpt)`
+  (3D, needs MANO); HaWoR's `detect_track` uses the same YOLO arrangement. Since
+  this pipeline takes tracking from WiLoR and reconstruction from HaWoR,
+  `backends/wilor_runner.py` is now a detector runner (ultralytics, low `--conf`
+  0.1 so gap-recovery candidates survive the 0.75 anchor threshold, HaWoR's
+  `external/detector.pt` accepted as a stand-in). `wilor_final.ckpt` and WiLoR's
+  MANO copy are documented as *not needed*.
+* **VGGT-Omega's package is `vggt_omega`**: `VGGTOmega().eval()` +
+  `load_state_dict(torch.load(...))`, `encoding_to_camera(pose_enc, image_size)`
+  (not `pose_encoding_to_extri_intri`), `load_and_preprocess_images(..., image_resolution=416)`,
+  and CUDA is mandatory (the upstream demo raises without it) - so Phase 3 has no
+  CPU fallback and says so.
+* **HaWoR's call sequence was right**: `hawor_motion_estimation` ->
+  `hawor_slam` -> `hawor_infiller` -> `run_mano`/`run_mano_left`, with
+  `load_slam_cam` at `lib/eval_utils/custom_utils.py:129` and our conservative
+  tracking writing `model_tracks.npy` in place of `detect_track(thresh=0.2)`.
+  MANO is required there (right mandatory, left recommended).
+
+Also: `detection.detector_confidence` config key (default 0.1) wired through
+`run_detection.py`; MANO messaging in `install_mano.sh` and `verify_weights.sh`
+updated to say who really needs it.
+
+Test suite: **276 passed**.
+
 ## 2026-09-24 21:45 (+08:00) - weights downloaded for real; MANO is needed in four places
 
 First run with real network access (the sandbox blocks DNS, so the download was

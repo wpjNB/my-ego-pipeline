@@ -28,6 +28,8 @@ preprocess:
   jpeg_quality: 2
 
 detection:
+  detector_confidence: 0.1 # detector floor; must stay below min_confidence so
+                           # gap-recovery candidates are not filtered out
   min_confidence: 0.75     # high-confidence anchor threshold
   max_gap: 4               # same-side gap that may be recovered
   iou_threshold: 0.20      # required IoU against the interpolated anchor box

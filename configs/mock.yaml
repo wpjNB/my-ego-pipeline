@@ -27,6 +27,7 @@ preprocess:
   jpeg_quality: 2
 
 detection:
+  detector_confidence: 0.1
   min_confidence: 0.75
   max_gap: 4
   iou_threshold: 0.20

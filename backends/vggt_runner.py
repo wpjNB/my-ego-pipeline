@@ -83,17 +83,37 @@ def load_model(args: argparse.Namespace) -> object:
         )
     _RESOLVED["path"] = str(checkpoint_dir)
     _RESOLVED["substituted"] = substituted
-    from vggt.models.vggt import VGGT  # noqa: PLC0415 - backend import
+    # The real package is `vggt_omega` (class VGGTOmega); see its demo_gradio.py:
+    #   model = VGGTOmega().eval(); model.load_state_dict(torch.load(ckpt))
+    # VGGT-Omega refuses to run without CUDA (the demo raises outright), so there
+    # is no CPU fallback for Phase 3 - say that plainly instead of failing later.
+    import torch  # noqa: PLC0415
+    from vggt_omega.models import VGGTOmega  # noqa: PLC0415 - backend import
 
-    model = VGGT.from_pretrained(str(checkpoint_dir))
-    try:
-        import torch  # noqa: PLC0415
-
-        device = args.device if args.device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu")
-        model = model.to(device).eval()
-        print(f"VGGT-Omega loaded on {device}", file=sys.stderr)
-    except ImportError as exc:  # pragma: no cover - only without torch
-        raise ImportError("VGGT requires torch in this environment") from exc
+    if args.device not in {"cuda", "auto"} and not str(args.device).startswith("cuda"):
+        raise RuntimeError(
+            f"VGGT-Omega requires CUDA, but device='{args.device}' was requested"
+        )
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "VGGT-Omega requires CUDA; torch.cuda.is_available() is False. Run Phase 3 on the "
+            "GPU server (the rest of the pipeline has no such requirement)."
+        )
+    weights_file = (
+        checkpoint_dir
+        if checkpoint_dir.is_file()
+        else next(checkpoint_dir.glob("*.pt"), None)
+    )
+    if weights_file is None:
+        raise FileNotFoundError(
+            f"no .pt checkpoint inside {checkpoint_dir}; expected "
+            f"{CHECKPOINT_FILENAMES.get(args.checkpoint, ('*.pt',))}"
+        )
+    model = VGGTOmega().eval()
+    model.load_state_dict(torch.load(str(weights_file), map_location="cpu"))
+    device = "cuda" if args.device == "auto" else args.device
+    model = model.to(device)
+    print(f"VGGT-Omega {weights_file.name} loaded on {device}", file=sys.stderr)
     _MODEL_CACHE[key] = model
     return model
 
@@ -125,16 +145,24 @@ def decode_predictions(
             f"Available: {available}"
         )
     try:
-        from vggt.utils.pose_enc import pose_encoding_to_extri_intri  # noqa: PLC0415
+        from vggt_omega.utils.pose_enc import encoding_to_camera  # noqa: PLC0415
     except ImportError as exc:  # pragma: no cover - backend import
         raise ImportError(
-            "vggt.utils.pose_enc.pose_encoding_to_extri_intri is required to decode the camera"
+            "vggt_omega.utils.pose_enc.encoding_to_camera is required to decode the camera "
+            "(that is the VGGT-Omega decoder; the original VGGT called it "
+            "pose_encoding_to_extri_intri)"
         ) from exc
 
     import torch  # noqa: PLC0415
 
-    extrinsics, intrinsics = pose_encoding_to_extri_intri(
-        torch.as_tensor(pose_enc), image_size
+    # The demo decodes against the *preprocessed* image size, which is what the
+    # intrinsics refer to (depth may live on a coarser grid - rescaled below).
+    processed = pick("images")
+    if processed is not None:
+        image_size = (int(processed.shape[-2]), int(processed.shape[-1]))
+    extrinsics, intrinsics = encoding_to_camera(
+        torch.as_tensor(pose_enc),
+        image_size,
     )
     extrinsics = np.asarray(extrinsics.detach().cpu(), dtype=np.float64).reshape(-1, 3, 4)
     intrinsics = np.asarray(intrinsics.detach().cpu(), dtype=np.float64).reshape(-1, 3, 3)
@@ -166,7 +194,7 @@ def decode_predictions(
 def run_model(args: argparse.Namespace, rng: object) -> dict[str, np.ndarray]:
     """Run VGGT-Omega on one window and return window arrays (poses + depth)."""
     import torch  # noqa: PLC0415
-    from vggt.utils.load_fn import load_and_preprocess_images  # noqa: PLC0415
+    from vggt_omega.utils.load_fn import load_and_preprocess_images  # noqa: PLC0415
 
     frames_dir = Path(args.frames)
     image_paths = [
@@ -178,7 +206,9 @@ def run_model(args: argparse.Namespace, rng: object) -> dict[str, np.ndarray]:
 
     model = load_model(args)
     images = load_and_preprocess_images(image_paths, image_resolution=args.resolution)
-    with torch.no_grad():
+    device = "cuda" if args.device == "auto" else args.device
+    images = images.to(device)
+    with torch.inference_mode():
         predictions = model(images)
     height, width = int(images.shape[-2]), int(images.shape[-1])
     return decode_predictions(predictions, image_size=(height, width), resolution=args.resolution)

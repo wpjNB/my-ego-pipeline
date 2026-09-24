@@ -99,11 +99,19 @@ def test_detections_from_predictions_refuses_to_guess() -> None:
         detections_from_predictions({"something_else": np.zeros(3)}, frame=0)
 
 
-def test_wilor_runner_reports_a_missing_checkpoint(tmp_path: Path) -> None:
+def test_wilor_runner_reports_a_missing_detector(tmp_path: Path) -> None:
     runner = load_script("wilor_runner_mod", "backends/wilor_runner.py")
-    args = runner.build_parser().parse_args(["--weights", str(tmp_path / "weights")])
-    with pytest.raises(FileNotFoundError, match="checkpoint"):
-        runner.load_detector(args)
+    weights = tmp_path / "weights"
+    assert runner.find_detector(weights) is None
+    available, detail = runner.backend_available(tmp_path / "third_party", weights)
+    assert not available
+    assert "detector.pt" in detail and "download_weights.sh" in detail
+
+    # HaWoR's copy of the same YOLO detector is accepted as a stand-in.
+    external = weights / "external"
+    external.mkdir(parents=True)
+    (external / "detector.pt").write_bytes(b"stub")
+    assert runner.find_detector(weights) == external / "detector.pt"
 
 
 # ------------------------------------------------------------------ HaWoR

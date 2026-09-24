@@ -1,19 +1,35 @@
 #!/usr/bin/env python
-"""WiLoR runner: executed **inside** the WiLoR environment (``ego3d_wilor``).
-
-Protocol (see ``runtime/subprocess_backend.py``): parse arguments, write the
-artefacts, print one JSON object as the last stdout line.
+"""WiLoR detection runner: executed inside the detector environment.
 
     python backends/wilor_runner.py --check
     python backends/wilor_runner.py --frames data/clip/frames --out raw.npz \
-        --third-party third_party --weights weights --device cuda
+        --third-party third_party --weights weights --device cuda --conf 0.1
 
-The conversion from "whatever the detector returned" to the pipeline's
-compacted ``boxes/confidence/count`` artefact lives in
-``ego3d_action.detection.wilor`` and is unit-tested; what is *not* verified here
-is the detector call itself, which cannot run without the checkout, the weights
-and a GPU. Every step raises with the exact missing piece rather than writing an
-empty artefact.
+What this stage actually is
+---------------------------
+
+Reading the sources settled a design question: this pipeline needs WiLoR's
+**detector**, not its 3D model.
+
+* WiLoR's demo splits the two: ``detector = YOLO('./pretrained_models/detector.pt')``
+  for boxes + handedness, and ``model = load_wilor(wilor_final.ckpt, ...)`` for
+  the 3D hand (its MANO layer needs the licence-gated MANO model).
+* HaWoR's own ``detect_track`` uses the very same arrangement:
+  ``YOLO('./weights/external/detector.pt')``.
+
+The reference system takes hand *tracking* from WiLoR and hand *reconstruction*
+from HaWoR, so only the detector (51 MiB, ``detector.pt``) is required here -
+``wilor_final.ckpt`` and WiLoR's MANO are only needed if you also want WiLoR's
+own 3D output, which this pipeline deliberately does not use.
+
+The detector threshold is deliberately low (default 0.1): the conservative
+tracker in Phase 1 anchors on ``confidence >= 0.75`` and only recovers a gap from
+a *low-confidence* detection whose box matches the interpolated anchor box, so
+those candidates have to survive the detector first.
+
+The conversion from detector output into the pipeline's artefact lives in
+``ego3d_action.detection.wilor`` and is unit-tested; the detector call itself
+needs the environment and the weights.
 """
 
 from __future__ import annotations
@@ -30,123 +46,120 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from ego3d_action.detection.wilor import (  # noqa: E402
     RawDetection,
     build_raw_detection_arrays,
-    detections_from_predictions,
 )
 from ego3d_action.io.serialization import save_npz  # noqa: E402
 
-DETECTION_MODULE = "wilor"  # WiLoR's python package once the repo is on sys.path
-
-CHECKPOINT_CANDIDATES = ("wilor_final.ckpt", "wilor.ckpt", "checkpoints/wilor_final.ckpt")
-CFG_CANDIDATES = ("model_config.yaml", "pretrained_models/model_config.yaml")
+DETECTION_MODULE = "ultralytics"
+#: Where the detector may live, most specific first. ``external/detector.pt`` is
+#: HaWoR's copy of the same YOLO hand detector and works as a stand-in.
+DETECTOR_CANDIDATES = (
+    "wilor/detector.pt",
+    "external/detector.pt",
+    "detector.pt",
+)
+#: YOLO class index -> our handedness (0 left, 1 right), as used by WiLoR's demo
+#: (``is_right = det.boxes.cls``).
+RIGHT_CLASS = 1
 
 
 def emit(payload: dict[str, object]) -> None:
     print(json.dumps(payload, sort_keys=True))
 
 
-def backend_available(third_party: Path) -> tuple[bool, str]:
-    """Report whether WiLoR (and its MANO asset) can be imported."""
-    checkout = third_party / "WiLoR"
-    if not checkout.is_dir():
-        return False, f"WiLoR checkout not found at {checkout}"
-    # wilor/models/__init__.py sets MANO.MODEL_PATH='./mano_data/', so WiLoR
-    # cannot construct its MANO layer without the licence-gated model there.
-    mano = checkout / "mano_data" / "MANO_RIGHT.pkl"
-    if not mano.is_file():
-        return False, (
-            f"MANO_RIGHT.pkl not found at {mano} - WiLoR's MANO layer needs it. "
-            "Get it from https://mano.is.tue.mpg.de/ and run "
-            "scripts/install_mano.sh --from <mano dir>"
-        )
-    sys.path.insert(0, str(checkout))
-    try:
-        __import__(DETECTION_MODULE)
-    except ImportError as exc:
-        return False, f"cannot import '{DETECTION_MODULE}' from {checkout}: {exc}"
-    return True, f"'{DETECTION_MODULE}' importable from {checkout}, MANO at {mano}"
-
-
-def _first_existing(root: Path, candidates: tuple[str, ...]) -> Path | None:
-    for relative in candidates:
+def find_detector(weights_root: str | Path) -> Path | None:
+    root = Path(weights_root)
+    for relative in DETECTOR_CANDIDATES:
         candidate = root / relative
-        if candidate.exists():
+        if candidate.is_file():
             return candidate
     return None
 
 
-def load_detector(args: argparse.Namespace) -> tuple[object, Path]:
-    """Import WiLoR and load its checkpoint.
+def backend_available(third_party: Path, weights_root: Path) -> tuple[bool, str]:
+    """Whether the detection stage can run: detector weights + ultralytics."""
+    _ = third_party  # the detector does not need the WiLoR checkout
+    detector = find_detector(weights_root)
+    if detector is None:
+        return False, (
+            f"detector.pt not found under {weights_root} (looked for "
+            f"{list(DETECTOR_CANDIDATES)}) - run ./scripts/download_weights.sh --only wilor"
+        )
+    try:
+        from ultralytics import __version__ as ultralytics_version  # noqa: PLC0415
+    except ImportError as exc:
+        return False, (
+            f"'{DETECTION_MODULE}' is not installed in this interpreter ({exc}); the detector "
+            "environment needs it (see environment-wilor.yml)"
+        )
+    return True, f"YOLO detector at {detector}, ultralytics {ultralytics_version}"
 
-    WiLoR is loaded through its documented entry point
-    (``wilor.models.load_wilor``); the checkpoint and config are located by
-    convention inside ``--weights``.
+
+def detections_from_yolo(result: object, *, frame: int) -> list[RawDetection]:
+    """Convert one Ultralytics result into :class:`RawDetection` records.
 
     Raises:
-        FileNotFoundError: checkpoint/config missing.
-        ImportError: WiLoR (or torch) is not importable in this interpreter.
+        NotImplementedError: the result object is not a YOLO boxes result.
     """
-    weights = Path(args.weights)
-    checkpoint = _first_existing(weights, CHECKPOINT_CANDIDATES)
-    cfg_path = _first_existing(weights, CFG_CANDIDATES) or _first_existing(
-        Path(args.third_party) / "WiLoR", CFG_CANDIDATES
+    boxes = getattr(result, "boxes", None)
+    if boxes is None or getattr(boxes, "xyxy", None) is None:
+        raise NotImplementedError(
+            "expected an Ultralytics result with `.boxes.xyxy`; got "
+            f"{type(result).__name__} with attributes {sorted(dir(result))[:12]}"
+        )
+    xyxy = boxes.xyxy.detach().cpu().numpy()
+    confidence = boxes.conf.detach().cpu().numpy().reshape(-1)
+    classes = (
+        boxes.cls.detach().cpu().numpy().reshape(-1).astype(int)
+        if boxes.cls is not None
+        else np.zeros(len(confidence), dtype=int)
     )
-    if checkpoint is None:
-        raise FileNotFoundError(
-            f"no WiLoR checkpoint in {weights} (looked for {list(CHECKPOINT_CANDIDATES)})"
+    detections: list[RawDetection] = []
+    for box, score, klass in zip(xyxy, confidence, classes, strict=False):
+        detections.append(
+            RawDetection(
+                bbox=np.asarray(box, dtype=np.float64),
+                confidence=float(score),
+                right_score=1.0 if int(klass) == RIGHT_CLASS else 0.0,
+                left_score=0.0 if int(klass) == RIGHT_CLASS else 1.0,
+            )
         )
-    if cfg_path is None:
-        raise FileNotFoundError(
-            f"no WiLoR model config found under {weights} or {args.third_party}/WiLoR"
-        )
-    from wilor.models import load_wilor  # noqa: PLC0415 - backend import
-
-    model, _cfg = load_wilor(checkpoint_path=str(checkpoint), cfg_path=str(cfg_path))
-    device = args.device if args.device != "auto" else ("cuda" if _cuda() else "cpu")
-    model = model.to(device).eval()
-    return model, Path(str(device))
-
-
-def _cuda() -> bool:
-    try:
-        import torch  # noqa: PLC0415
-    except ImportError:
-        return False
-    return bool(torch.cuda.is_available())
+    _ = frame
+    return detections
 
 
 def run_model(args: argparse.Namespace, frames: list[Path]) -> dict[str, np.ndarray]:
     """Detect hands on every frame and pack the result into the raw artefact."""
     import cv2  # noqa: PLC0415 - optional at import time
+    from ultralytics import YOLO  # noqa: PLC0415 - backend import
 
-    model, device = load_detector(args)
-    print(f"WiLoR loaded on {device}", file=sys.stderr)
-    from wilor.utils import process_image  # noqa: PLC0415 - backend import
+    detector_path = find_detector(args.weights)
+    if detector_path is None:
+        raise FileNotFoundError(
+            f"detector.pt not found under {args.weights}; run "
+            "./scripts/download_weights.sh --only wilor"
+        )
+    detector = YOLO(str(detector_path))
+    if args.device not in {"auto", "cpu"}:
+        detector.to(args.device if args.device != "auto" else "cuda")
+    print(f"YOLO detector {detector_path.name} loaded", file=sys.stderr)
 
     per_frame: list[list[RawDetection]] = []
     for frame_id, path in enumerate(frames):
         image = cv2.imread(str(path), cv2.IMREAD_COLOR)
         if image is None:
             raise FileNotFoundError(f"cannot decode {path}")
-        with _no_grad():
-            predictions = model(process_image(image))
-        per_frame.append(detections_from_predictions(predictions, frame=frame_id))
-    return build_raw_detection_arrays(
-        per_frame, num_frames=args.num_frames or len(frames)
-    )
-
-
-def _no_grad() -> object:
-    import contextlib
-
-    try:
-        import torch  # noqa: PLC0415
-    except ImportError:  # pragma: no cover - only reachable without the backend
-        return contextlib.nullcontext()
-    return torch.no_grad()
+        results = detector.predict(
+            image, conf=args.conf, verbose=False, device=None if args.device == "auto" else args.device
+        )
+        if not results:
+            per_frame.append([])
+            continue
+        per_frame.append(detections_from_yolo(results[0], frame=frame_id))
+    return build_raw_detection_arrays(per_frame, num_frames=args.num_frames or len(frames))
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="WiLoR runner")
+    parser = argparse.ArgumentParser(description="WiLoR detection runner")
     parser.add_argument("--check", action="store_true", help="report availability and exit")
     parser.add_argument("--frames", default=None)
     parser.add_argument("--out", default=None)
@@ -158,12 +171,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-frames", type=int, default=None)
     parser.add_argument("--width", type=int, default=None)
     parser.add_argument("--height", type=int, default=None)
+    parser.add_argument(
+        "--conf",
+        type=float,
+        default=0.1,
+        help="detector confidence floor; keep it below the tracker's 0.75 anchor "
+        "threshold so gap-recovery candidates survive",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    available, detail = backend_available(Path(args.third_party))
+    available, detail = backend_available(Path(args.third_party), Path(args.weights))
     if args.check:
         emit(
             {
@@ -189,6 +209,8 @@ def main(argv: list[str] | None = None) -> int:
                 "status": "ok",
                 "backend": "wilor",
                 "num_frames": len(frames),
+                "detections": int(np.count_nonzero(arrays["count"])),
+                "conf": args.conf,
                 "output": str(args.out),
                 "device": args.device,
             }

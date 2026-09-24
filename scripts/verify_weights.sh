@@ -196,10 +196,11 @@ for mano_path in \
     [[ -f "${mano_path}" ]] || mano_missing=$((mano_missing + 1))
 done
 if [[ "${mano_missing}" -gt 0 ]]; then
-    echo "note       : MANO is missing in ${mano_missing} of 4 expected locations. Phase 1"
-    echo "             (WiLoR) and Phase 2 (HaWoR) need it, and without it the HOT3D"
-    echo "             reference stays wrist-only. Get the licence-gated model from"
-    echo "             https://mano.is.tue.mpg.de/ then run:"
+    echo "note       : MANO is missing in ${mano_missing} of 4 locations. Phase 2 (HaWoR)"
+    echo "             needs the HaWoR ones, this project's forward kinematics needs"
+    echo "             weights/mano, and the WiLoR copy is only used by WiLoR's own 3D"
+    echo "             model (Phase 1 needs just detector.pt). Get the licence-gated model"
+    echo "             from https://mano.is.tue.mpg.de/ then run:"
     echo "             ./scripts/install_mano.sh --from <dir containing MANO_RIGHT.pkl>"
 fi
 if [[ -f "${DEST}/mano/MANO_RIGHT.pkl" ]]; then

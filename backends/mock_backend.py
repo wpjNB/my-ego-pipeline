@@ -208,6 +208,7 @@ def build_parser() -> argparse.ArgumentParser:
     wilor.add_argument("--height", type=int, default=synthetic.DEFAULT_HEIGHT)
     wilor.add_argument("--image-format", default="jpg")
     wilor.add_argument("--batch-size", type=int, default=4)
+    wilor.add_argument("--conf", type=float, default=0.1)
     add_backend_args(wilor)
     wilor.set_defaults(func=command_wilor)
 

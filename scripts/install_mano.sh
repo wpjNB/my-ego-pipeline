@@ -10,10 +10,12 @@
 # downloaded by a script - this one only places files you already have. Four
 # independent consumers look for it under four different paths:
 #
-#   third_party/HaWoR/_DATA/data/mano/MANO_RIGHT.pkl        HaWoR run_mano
+#   third_party/HaWoR/_DATA/data/mano/MANO_RIGHT.pkl           HaWoR run_mano  (required)
 #   third_party/HaWoR/_DATA/data_left/mano_left/MANO_LEFT.pkl  HaWoR run_mano_left
-#   third_party/WiLoR/mano_data/MANO_RIGHT.pkl              WiLoR (MANO.MODEL_PATH)
-#   weights/mano/MANO_RIGHT.pkl                             our own FK / convert_mano.py
+#   weights/mano/MANO_RIGHT.pkl                                our FK / convert_mano.py
+#   third_party/WiLoR/mano_data/MANO_RIGHT.pkl                 only if you also run
+#                                                              WiLoR's own 3D model
+#                                                              (Phase 1 needs just the detector)
 #
 # --from may be a directory (MANO_RIGHT.pkl / MANO_LEFT.pkl are picked up from
 # it) or the RIGHT pickle itself. MANO_LEFT is optional: HaWoR can run with the
@@ -116,8 +118,8 @@ install_one() {  # install_one <source> <destination>
 echo
 echo "installing:"
 install_one "${RIGHT}" "${THIRD_PARTY}/HaWoR/_DATA/data/mano/MANO_RIGHT.pkl"
-install_one "${RIGHT}" "${THIRD_PARTY}/WiLoR/mano_data/MANO_RIGHT.pkl"
 install_one "${RIGHT}" "${DEST_ROOT}/mano/MANO_RIGHT.pkl"
+install_one "${RIGHT}" "${THIRD_PARTY}/WiLoR/mano_data/MANO_RIGHT.pkl"
 if [[ "${have_left}" == "1" ]]; then
     install_one "${LEFT}" "${THIRD_PARTY}/HaWoR/_DATA/data_left/mano_left/MANO_LEFT.pkl"
     install_one "${LEFT}" "${THIRD_PARTY}/WiLoR/mano_data/MANO_LEFT.pkl"

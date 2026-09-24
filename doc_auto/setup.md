@@ -159,14 +159,21 @@ conda run -n ego3d_base python scripts/doctor.py --config configs/macrodata_fina
 ### MANO specifically
 
 MANO is licence-gated (register at <https://mano.is.tue.mpg.de/>), so no script
-can download it - but it *is* needed, in **four independent places**:
+can download it. Reading the backend sources settled where it is actually
+needed - and the answer is *not* "everywhere":
 
 | Consumer | Expected path | Needed for |
 | --- | --- | --- |
-| HaWoR `run_mano` | `third_party/HaWoR/_DATA/data/mano/MANO_RIGHT.pkl` | Phase 2 right hand |
+| HaWoR `run_mano` | `third_party/HaWoR/_DATA/data/mano/MANO_RIGHT.pkl` | **Phase 2 (required)** |
 | HaWoR `run_mano_left` | `third_party/HaWoR/_DATA/data_left/mano_left/MANO_LEFT.pkl` | Phase 2 left hand |
-| WiLoR (`MANO.MODEL_PATH='./mano_data/'`) | `third_party/WiLoR/mano_data/MANO_RIGHT.pkl` | Phase 1 mesh/3D head |
 | this project's forward kinematics | `weights/mano/MANO_RIGHT.pkl` (+ `.npz`) | 21-joint HOT3D references |
+| WiLoR (`MANO.MODEL_PATH='./mano_data/'`) | `third_party/WiLoR/mano_data/MANO_RIGHT.pkl` | only for WiLoR's *own* 3D model - Phase 1 uses just `detector.pt` |
+
+**Phase 1 needs no MANO and no `wilor_final.ckpt`**: WiLoR's demo separates the
+YOLO detector (`detector.pt`, boxes + handedness) from the 3D model
+(`load_wilor(wilor_final.ckpt, ...)`, whose MANO layer needs the licence-gated
+model). This project takes hand *tracking* from WiLoR and hand *reconstruction*
+from HaWoR, so only the detector is used - 51 MiB instead of 2.4 GiB.
 
 The HaWoR and WiLoR directories are empty after cloning (they hold only
 `.gitkeep` - the model is not redistributable), so the checkouts alone are not

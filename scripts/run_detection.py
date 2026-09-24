@@ -69,6 +69,9 @@ def main(argv: list[str] | None = None) -> int:
                 weights_root=weights,
                 device=context.device,
                 batch_size=int(context.config.get("hand.batch_size", 4)),
+                detector_confidence=float(
+                    context.config.get("detection.detector_confidence", 0.1)
+                ),
                 num_frames=frames.num_frames,
                 width=int(frame_width),
                 height=int(frame_height),

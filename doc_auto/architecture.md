@@ -57,6 +57,18 @@ fabricates the stand-in for plumbing runs.
 | HaWoR 21 joints -> 16/8 window files | ``hand/hawor.py::hand_windows_from_joints`` | yes |
 | the backend call itself | ``backends/*_runner.py::run_model`` | needs the GPU server |
 
+### What each phase actually requires (from reading the sources)
+
+| Phase | Backend code | Weights | MANO | GPU |
+| --- | --- | --- | --- | --- |
+| 1 detection | `ultralytics` YOLO | `detector.pt` (51 MiB) | no | optional |
+| 2 hand | HaWoR checkout | `hawor.ckpt`, `infiller.pt` | **yes** (right; left recommended) | yes |
+| 3 camera | `vggt_omega` package | `vggt_omega_1b_416_reproduce.pt` | no | **required** (VGGT-Omega raises without CUDA) |
+| 4-7 | this repository | - | only for 21-joint references | no |
+
+WiLoR's `wilor_final.ckpt` and its MANO copy are therefore *not* needed by this
+pipeline: Phase 1 takes tracking from WiLoR and reconstruction from HaWoR.
+
 HaWoR's infiller hard-depends on its own SLAM output and emits hands in HaWoR's
 SLAM world frame; the runner therefore converts them back to camera space with
 HaWoR's own poses, keeping VGGT-Omega the sole authority on the metric world
