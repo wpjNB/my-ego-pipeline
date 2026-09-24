@@ -17,10 +17,14 @@
 #                                                              WiLoR's own 3D model
 #                                                              (Phase 1 needs just the detector)
 #
-# --from may be a directory (MANO_RIGHT.pkl / MANO_LEFT.pkl are picked up from
-# it) or the RIGHT pickle itself. MANO_LEFT is optional: HaWoR can run with the
-# right model plus its `fix_shapedirs` workaround, and our own FK mirrors the
-# right model when the left one is absent.
+# --from may be:
+#   * the official archive (mano_v1_2.zip) - it is unpacked and the two pickles
+#     are located automatically,
+#   * a directory containing MANO_RIGHT.pkl / MANO_LEFT.pkl,
+#   * the RIGHT pickle itself.
+# MANO_LEFT is optional: HaWoR can run with the right model plus its
+# `fix_shapedirs` workaround, and our own FK mirrors the right model when the
+# left one is absent.
 
 set -euo pipefail
 
@@ -50,7 +54,32 @@ if [[ -z "${FROM}" ]]; then
     exit 2
 fi
 
-if [[ -d "${FROM}" ]]; then
+EXTRACT_DIR=""
+# The EXIT trap must not leak a status: a bare `[[ ... ]] && cmd` returns 1 when
+# the test fails, which would replace the script's real exit code.
+cleanup() {
+    if [[ -n "${EXTRACT_DIR}" && -d "${EXTRACT_DIR}" ]]; then
+        rm -rf "${EXTRACT_DIR}"
+    fi
+    return 0
+}
+trap cleanup EXIT
+
+if [[ -f "${FROM}" && "${FROM}" == *.zip ]]; then
+    if ! command -v unzip >/dev/null 2>&1; then
+        echo "error: '${FROM}' is a zip but unzip is not installed" >&2
+        exit 2
+    fi
+    EXTRACT_DIR="$(mktemp -d)"
+    echo "unpacking ${FROM} ..."
+    unzip -q -o "${FROM}" -d "${EXTRACT_DIR}"
+    RIGHT="$(find "${EXTRACT_DIR}" -name 'MANO_RIGHT.pkl' -type f | head -1)"
+    LEFT="$(find "${EXTRACT_DIR}" -name 'MANO_LEFT.pkl' -type f | head -1)"
+    if [[ -z "${RIGHT}" ]]; then
+        echo "error: no MANO_RIGHT.pkl inside ${FROM} (looked in the whole archive)" >&2
+        exit 1
+    fi
+elif [[ -d "${FROM}" ]]; then
     RIGHT="${FROM}/MANO_RIGHT.pkl"
     LEFT="${FROM}/MANO_LEFT.pkl"
 elif [[ -f "${FROM}" ]]; then

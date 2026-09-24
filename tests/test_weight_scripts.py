@@ -178,6 +178,53 @@ def test_mano_installer_accepts_the_right_pickle_directly(tmp_path: Path) -> Non
     assert (dest / "mano/MANO_RIGHT.pkl").is_file()
 
 
+def make_mano_zip(directory: Path, *, with_right: bool = True) -> Path:
+    """An archive shaped like the official ``mano_v1_2.zip``."""
+    import zipfile
+
+    staging = directory / "mano_v1_2" / "models"
+    staging.mkdir(parents=True, exist_ok=True)
+    names = ["MANO_LEFT.pkl"] if not with_right else ["MANO_RIGHT.pkl", "MANO_LEFT.pkl"]
+    for name in names:
+        path = staging / name
+        with path.open("wb") as handle:
+            handle.write(b"\x80\x04\x95")
+            handle.seek(2_000_000 - 1)
+            handle.write(b"\0")
+    archive = directory / "mano_v1_2.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        for name in names:
+            handle.write(staging / name, f"mano_v1_2/models/{name}")
+    return archive
+
+
+def test_mano_installer_accepts_the_official_zip(tmp_path: Path) -> None:
+    """The READMEs say 'download mano_v1_2.zip and unzip' - so accept the zip."""
+    archive = make_mano_zip(tmp_path)
+    tp, dest = tmp_path / "third_party", tmp_path / "weights"
+    result = run(
+        MANO, "--from", str(archive),
+        "--third-party", str(tp), "--dest-root", str(dest),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "unpacking" in result.stdout
+    assert (dest / "mano/MANO_RIGHT.pkl").is_file()
+    assert (tp / "HaWoR/_DATA/data/mano/MANO_RIGHT.pkl").is_file()
+    assert (tp / "HaWoR/_DATA/data_left/mano_left/MANO_LEFT.pkl").is_file()
+    # The temporary extraction directory is cleaned up.
+    assert not list(tmp_path.glob("tmp*"))
+
+
+def test_mano_installer_rejects_a_zip_without_the_right_model(tmp_path: Path) -> None:
+    archive = make_mano_zip(tmp_path, with_right=False)
+    result = run(
+        MANO, "--from", str(archive),
+        "--third-party", str(tmp_path / "tp"), "--dest-root", str(tmp_path / "w"),
+    )
+    assert result.returncode == 1
+    assert "no MANO_RIGHT.pkl inside" in result.stderr
+
+
 # -------------------------------------------------------------- downloader
 
 
