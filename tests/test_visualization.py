@@ -170,3 +170,60 @@ def test_wrist_comparison_draws_only_projectable_points(tmp_path: Path) -> None:
         fps=2.0,
     )
     assert out.is_file()
+
+
+def test_world_to_camera_is_the_inverse_of_the_stored_pose() -> None:
+    """Every overlay must apply c2w before projecting - never the intrinsics alone."""
+    rotation = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    translation = np.array([1.0, 2.0, 3.0])
+    point_world = np.array([1.0, 2.0, 2.0])  # one metre in front of the camera
+    camera = overlay.world_to_camera(point_world, rotation, translation)
+    assert np.allclose(camera, [0.0, 0.0, -1.0])  # camera looks down -z
+
+    # Projecting a world point without the transform is a different pixel entirely.
+    intrinsics = np.array([[600.0, 0.0, 320.0], [0.0, 600.0, 240.0], [0.0, 0.0, 1.0]])
+    with_camera = intrinsics @ camera
+    without = intrinsics @ point_world
+    assert not np.allclose(with_camera[:2] / with_camera[2], without[:2] / without[2])
+
+
+def test_wrist_comparison_can_draw_the_reference_skeleton(tmp_path: Path) -> None:
+    """The skeleton needs finite joints; a wrist-only reference still renders."""
+    frames = write_frames(tmp_path / "frames", count=3)
+    total = len(frames)
+    intrinsics = np.broadcast_to(
+        np.array([[60.0, 0.0, 32.0], [0.0, 60.0, 24.0], [0.0, 0.0, 1.0]]), (total, 3, 3)
+    ).copy()
+    rotation = np.broadcast_to(np.eye(3), (total, 3, 3)).copy()
+    translation = np.zeros((total, 3))
+    valid = np.ones((total, 2), dtype=bool)
+
+    full = np.full((total, 2, 21, 3), 0.5)
+    full[:, 0, 0, :] = 0.0
+    skeleton = overlay.write_wrist_comparison_video(
+        frames,
+        full,
+        rotation,
+        translation,
+        intrinsics,
+        valid,
+        tmp_path / "skeleton.mp4",
+        draw_skeleton=True,
+        fps=3.0,
+    )
+    assert skeleton.is_file() and skeleton.stat().st_size > 0
+
+    wrist_only = np.full((total, 2, 21, 3), np.nan)
+    wrist_only[:, :, 0, :] = 0.5
+    plain = overlay.write_wrist_comparison_video(
+        frames,
+        wrist_only,
+        rotation,
+        translation,
+        intrinsics,
+        valid,
+        tmp_path / "wrist_only.mp4",
+        draw_skeleton=True,
+        fps=3.0,
+    )
+    assert plain.is_file() and plain.stat().st_size > 0

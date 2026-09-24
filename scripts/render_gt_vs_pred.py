@@ -2,7 +2,11 @@
 """Reference-versus-prediction viewer.
 
 Projects the reference wrist on the egocentric RGB using the reference camera,
-optionally together with a prediction, and writes a video plus a few stills:
+optionally together with a prediction, and writes a video plus a few stills.
+``--skeleton`` additionally draws the reference's 21 joints (it needs a
+MANO-built reference); both the wrist and the joints go through the same
+world -> camera transform, so what you see is the trajectory contract, not an
+ad-hoc projection:
 
     # check that the imported ground truth lands on the real hand
     python scripts/render_gt_vs_pred.py --config configs/hot3d.yaml --clip hot3d_ep000 \
@@ -45,6 +49,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--stride", type=int, default=1, help="render every Nth frame")
     parser.add_argument("--max-frames", type=int, default=None)
     parser.add_argument("--stills", type=int, default=4, help="number of single-frame PNGs to save")
+    parser.add_argument(
+        "--skeleton",
+        action="store_true",
+        help="also draw the reference's 21 joints (needs a MANO-built reference)",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -90,6 +99,7 @@ def main(argv: list[str] | None = None) -> int:
             valid,
             out_path,
             prediction_world=None if prediction is None else prediction.joints_world[indices],
+            draw_skeleton=args.skeleton,
             fps=float(args.fps or frames.fps) / float(args.stride),
             still_indices=still_steps,
         )

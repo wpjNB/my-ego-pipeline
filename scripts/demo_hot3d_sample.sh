@@ -58,6 +58,7 @@ run scripts/render_gt_vs_pred.py \
   --data-root "$DATA_ROOT" \
   --prediction "$DATA_ROOT/$CLIP/trajectory/ground_truth.npz" \
   --ground-truth "$DATA_ROOT/$CLIP/trajectory/ground_truth.npz" \
+  --skeleton \
   --stills 4
 
 if [ "$WITH_MOCK" = "1" ]; then

@@ -153,6 +153,13 @@ with the reference camera:
 
 ![ground truth on the sample](/home/wpj/ego/my-ego-pipeline/data/hot3d/hot3d_ep000/visualization/gt_vs_pred_stills/000150.png)
 
+Add `--skeleton` to `scripts/render_gt_vs_pred.py` to draw the reference's 21
+joints as well; the flag, the wrist marker and every other overlay run the joints
+through `visualization.overlay.world_to_camera()` first. Projecting world points
+with the intrinsics alone (no `camera_R_c2w` / `camera_t_c2w`) is what makes a
+debug figure look "broken" - the test
+`test_world_to_camera_is_the_inverse_of_the_stored_pose` guards it.
+
 ### 21 joints with MANO (or wrist-only without it)
 
 The sample stores a wrist pose plus 15 joint rotations, not 21 joint positions.

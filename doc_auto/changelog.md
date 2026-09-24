@@ -1,5 +1,46 @@
 # Changelog
 
+## 2026-09-24 22:30 (+08:00) - the "broken hands" figure was a bad render, not the reference
+
+A debug still (`outputs/real_mano_frame150.png`, produced by a throw-away snippet
+in an earlier session, not by any script in this repository) showed the hands
+floating over the bowl. The reference itself is fine - the *figure* was wrong.
+
+Diagnosis, reproduced rather than guessed: projecting `hand_xyz_world` with
+`camera_K` and **without** `camera_R_c2w` / `camera_t_c2w` reproduces that image
+to a mean |delta| of 0.63/255 per pixel (i.e. bbox-exact). The overlay had
+skipped the world -> camera transform, so the joints stayed in the World-0 frame
+and the hands landed wherever that origin projects to. The pipeline's own
+visualisers (`write_wrist_comparison_video`, `write_hand_video`) always apply it:
+with the transform, the `GT L` / `GT R` markers sit on the wrists and the
+projected MANO mesh covers the real hands.
+
+Two related traps, both now documented rather than rediscovered:
+
+* the `01_detection.mp4` / `02_hawor.mp4` in `data/hot3d/hot3d_ep000/` were
+  written on 2026-09-23 with `backends.mode: mock` - their "hands" are the
+  deterministic stand-in, so any judgement of quality from them is void;
+* a 21-joint stick figure drawn over a *grasping* hand fans its fingers out
+  because the fingertips are curled behind the hand - a mesh or the wrist
+  marker is the honest thing to look at.
+
+Also, while auditing, a real data-level finding: the sample stores each hand
+pose twice (`observation.state` axis-angle vs the `*_hand_pose` 135-value matrix
+column) and the two disagree by up to ~33 deg on a few joints (index 6/9/10/12
+for this episode) - ~4 cm at the fingertips. The importer uses the matrix column
+plus `*_orient_world`, which is the encoding declared as `hand_frame: world`.
+That inconsistency is in the sample, not in the conversion, and it is now
+recorded instead of silently averaged away.
+
+Fixes: added `visualization.overlay.world_to_camera()` (with a test that fails if
+someone projects world points with the intrinsics alone), a `--skeleton` flag on
+`scripts/render_gt_vs_pred.py`, and `scripts/demo_hot3d_sample.sh` now renders the
+reference overlay *with* the skeleton. The four misleading ad-hoc PNGs were
+deleted and replaced by `outputs/reference_overlay_frame{150,375}.png` from the
+real script.
+
+Test suite: **288 passed**.
+
 ## 2026-09-24 22:12 (+08:00) - MANO is wired into both hands and both real configs
 
 `weights/mano` now holds both official models, so the 21-joint reference uses

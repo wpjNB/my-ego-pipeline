@@ -291,6 +291,25 @@ def _project_wrist(
     return int(round(pixel[0] / pixel[2])), int(round(pixel[1] / pixel[2]))
 
 
+def world_to_camera(
+    points_world: Array, rotation_c2w: Array, translation_c2w: Array
+) -> Array:
+    """``[..., 3]`` world points -> camera space for the same camera.
+
+    This is the transform that every overlay has to apply: the trajectory
+    contract keeps ``hand_xyz_world`` in metres, and only ``camera_R_c2w`` /
+    ``camera_t_c2w`` know where the camera was. Drawing world points with the
+    intrinsics alone (i.e. skipping this step) puts the hands wherever the world
+    origin happens to be - the mistake that made an earlier debug figure look
+    broken.
+    """
+    points = np.asarray(points_world, dtype=np.float64)
+    rotation = np.asarray(rotation_c2w, dtype=np.float64)
+    translation = np.asarray(translation_c2w, dtype=np.float64)
+    rotated = np.einsum("ji,...j->...i", rotation, points - translation)
+    return rotated
+
+
 def write_wrist_comparison_video(
     frame_paths: Sequence[Path],
     ground_truth_world: Array,
@@ -301,6 +320,7 @@ def write_wrist_comparison_video(
     out_path: str | Path,
     *,
     prediction_world: Array | None = None,
+    draw_skeleton: bool = False,
     fps: float = 30.0,
     still_indices: Sequence[int] = (),
     still_dir: str | Path | None = None,
@@ -310,6 +330,11 @@ def write_wrist_comparison_video(
     Both trajectories are projected with the *reference* camera, so this is a
     direct visual check that the ground truth - and the frame conventions the
     whole pipeline uses - line up with the pixels.
+
+    With ``draw_skeleton`` the full 21-joint reference (and prediction) is drawn
+    as well, for frames whose joints are finite - i.e. whenever the reference was
+    built with MANO. Joints and wrists always go through
+    :func:`world_to_camera` first.
     """
     cv2 = require_cv2()
     frames = list(frame_paths)
@@ -340,6 +365,19 @@ def write_wrist_comparison_video(
             if frame is None:
                 raise StageIOError(f"cannot decode {path}")
             canvas = frame.copy()
+            if draw_skeleton:
+                # The reference only: the prediction keeps its own orange marker,
+                # and the two must stay visually distinguishable.
+                joints_camera = world_to_camera(
+                    truth[index], rotation_c2w[index], translation_c2w[index]
+                )
+                drawable = np.asarray(valid[index], dtype=bool) & np.isfinite(
+                    joints_camera
+                ).all(axis=(1, 2))
+                if drawable.any():
+                    canvas = draw_hand_projection(
+                        canvas, joints_camera, intrinsics[index], drawable, radius=2
+                    )
             for hand, colour, label in ((0, LEFT_COLOUR, "L"), (1, RIGHT_COLOUR, "R")):
                 if not bool(valid[index, hand]):
                     continue

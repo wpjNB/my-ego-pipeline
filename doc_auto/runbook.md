@@ -1,6 +1,6 @@
 # Runbook: how to run this project
 
-Last modified: 2026-09-24 22:12 (+08:00)
+Last modified: 2026-09-24 22:30 (+08:00)
 
 Two paths. Path A needs no weights and no GPU; Path B is the real pipeline.
 Start every session with the audit:
@@ -28,6 +28,28 @@ WITH_MOCK=1 bash scripts/demo_hot3d_sample.sh   # Phases 1-6 on real 512x512 foo
 `make sample` now writes a **21-joint** reference (`hand_joints: mano_fk`,
 `mano_mirrored: {left: false, right: false}`) because `weights/mano` holds both
 official models and `configs/hot3d.yaml` points at it.
+
+### Judging the reference (and why a debug figure once looked broken)
+
+```bash
+python scripts/render_gt_vs_pred.py --config configs/hot3d.yaml --clip hot3d_ep000 \
+    --data-root data/hot3d --skeleton \
+    --prediction data/hot3d/hot3d_ep000/trajectory/ground_truth.npz \
+    --ground-truth data/hot3d/hot3d_ep000/trajectory/ground_truth.npz
+```
+
+Both the wrist marker and `--skeleton` go through
+`visualization.overlay.world_to_camera()`. Skipping that transform (projecting
+`hand_xyz_world` with `camera_K` alone) is the mistake that produced a
+now-deleted debug PNG where the hands floated over the bowl - it is not a
+pipeline bug, and the test `test_world_to_camera_is_the_inverse_of_the_stored_pose`
+exists to keep it that way.
+
+Interpretation rules: `01_detection.mp4` / `02_hawor.mp4` written with
+`backends.mode: mock` show the deterministic stand-in, not a model; and a
+21-joint stick figure on a *grasping* hand looks fanned out because the
+fingertips curl behind the palm - look at the wrist marker or the projected mesh
+instead.
 
 What `make demo` prints on this machine (CPU, mock):
 
