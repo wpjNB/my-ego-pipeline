@@ -16,8 +16,11 @@ git clone https://github.com/ThunderVVV/HaWoR         third_party/HaWoR
 git clone https://github.com/facebookresearch/vggt    third_party/VGGT-Omega
 ```
 
-Weights go into `weights/<backend>/` (`weights/wilor`, `weights/hawor`,
-`weights/vggt-omega`) and are never committed.
+Weights go into `weights/<backend>/` (`weights/wilor`, `weights/hawor/checkpoints`,
+`weights/vggt-omega`) and are never committed. `./scripts/download_weights.sh`
+fetches what is publicly available; VGGT-Omega comes from ModelScope
+(`facebook/VGGT-Omega`, `vggt_omega_1b_416_reproduce.pt`, FAIR Noncommercial
+Research License) and MANO stays a manual, licence-gated download.
 
 ## Why not fork HaWoR?
 

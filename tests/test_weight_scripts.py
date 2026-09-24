@@ -16,7 +16,9 @@ VERIFY = REPO_ROOT / "scripts" / "verify_weights.sh"
 
 
 def run(script: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    merged = {**os.environ, **(env or {})}
+    # The real floors are 4.58 GB (VGGT) / 10 MiB (WiLoR, HaWoR); tests use small
+    # sparse files and lower the VGGT floor so the scripts stay fast.
+    merged = {**os.environ, "VGGT_MIN_BYTES": "1000000", **(env or {})}
     return subprocess.run(
         [str(script), *args],
         cwd=REPO_ROOT,
@@ -72,6 +74,9 @@ def test_dry_run_prints_the_plan_without_writing_anything(tmp_path: Path) -> Non
     ):
         assert needle in result.stdout
     assert "huggingface.co" in result.stdout
+    # VGGT-Omega comes from ModelScope, with the API form as a fallback.
+    assert "modelscope.cn/models/facebook/VGGT-Omega/resolve/master" in result.stdout
+    assert "api/v1/models/facebook/VGGT-Omega/repo" in result.stdout
     assert "Plan complete (nothing was downloaded)" in result.stdout
     assert not dest.exists() or not any(dest.rglob("*"))
 
@@ -202,3 +207,15 @@ def test_verify_notes_an_unconverted_mano(tmp_path: Path) -> None:
     (dest / "mano" / "MANO_RIGHT.npz").write_bytes(b"PK\x03\x04" + b"n" * 4096)
     converted = run(VERIFY, "--dest", str(dest))
     assert "paths.mano_model" in converted.stdout
+
+
+def test_verify_accepts_either_published_vggt_file(tmp_path: Path) -> None:
+    """ModelScope ships the 416 reproduction, the 512 and the 256-text checkpoint."""
+    for name in ("vggt_omega_1b_416_reproduce.pt", "vggt_omega_1b_512.pt", "vggt_omega_1b_256_text.pt"):
+        dest = tmp_path / name.replace(".pt", "")
+        fill_required_tree(dest)
+        (dest / "vggt-omega" / "vggt_omega_1b_416_reproduce.pt").unlink()
+        torch_like(dest / "vggt-omega" / name, megabytes=2.0)
+        result = run(VERIFY, "--dest", str(dest))
+        assert result.returncode == 0, f"{name}: {result.stdout}"
+        assert name in result.stdout

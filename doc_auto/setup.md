@@ -138,8 +138,15 @@ VGGT_URL=file:///srv/mirror/vggt_omega_1b_416_reproduce.pt \
 | --- | --- | --- | --- |
 | WiLoR detector checkpoint (`wilor_final.ckpt`, plus `model_config.yaml`) | `weights/wilor/` | WiLoR repo / release page | Phase 1 |
 | HaWoR checkpoints (`hawor.ckpt`, `infiller.pt`) | `weights/hawor/checkpoints/` | HaWoR release page | Phase 2 |
-| VGGT-Omega `VGGT-Omega-1B-416-Reproduction` | `weights/vggt-omega/` | VGGT-Omega release page | Phase 3 |
+| VGGT-Omega `vggt_omega_1b_416_reproduce.pt` (4.58 GB) | `weights/vggt-omega/` | ModelScope `facebook/VGGT-Omega`, revision `master` | Phase 3 |
 | MANO model (`MANO_RIGHT.pkl`) | `weights/mano/` (converted to `.npz`) | mano.is.tue.mpg.de (licence + registration) | 21-joint references |
+
+The VGGT-Omega repository also publishes `vggt_omega_1b_512.pt` (4.58 GB) and
+`vggt_omega_1b_256_text.pt` (5.40 GB); the script uses them as fallbacks and the
+verifier accepts any of the three. Its licence is the **FAIR Noncommercial
+Research License** - respect it. The 416 reproduction file is the one the
+reference configuration names, so downloading it means no checkpoint
+substitution is reported.
 
 Then verify end to end:
 

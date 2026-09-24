@@ -16,13 +16,21 @@
 #   VGGT_URL=file:///srv/mirror/vggt_omega_1b_416_reproduce.pt \
 #       ./scripts/download_weights.sh
 #
+# Sources
+#   WiLoR      Hugging Face space rolpotamias/WiLoR        (wilor_final.ckpt ...)
+#   HaWoR      Hugging Face ThunderVVV/HaWoR              (hawor.ckpt, infiller.pt ...)
+#   VGGT-Omega ModelScope facebook/VGGT-Omega (master)    (vggt_omega_1b_416_reproduce.pt,
+#             4.58 GB, FAIR Noncommercial Research License; the 512 and 256-text
+#             checkpoints live in the same repo and are used as fallbacks)
+#   MANO       licence-gated, printed as a manual step
+#
 # Layout written (what the runners and scripts/doctor.py look for):
 #
 #   weights/
-#   ├── wilor/      wilor_final.ckpt  model_config.yaml  detector.pt
-#   ├── hawor/      checkpoints/hawor.ckpt  checkpoints/infiller.pt
-#   ├── vggt-omega/ vggt_omega_1b_416_reproduce.pt
-#   └── mano/       MANO_RIGHT.pkl            (licence-gated: never auto-fetched)
+#   |-- wilor/      wilor_final.ckpt  model_config.yaml  detector.pt
+#   |-- hawor/      checkpoints/hawor.ckpt  checkpoints/infiller.pt
+#   |-- vggt-omega/ vggt_omega_1b_416_reproduce.pt  configuration.json
+#   `-- mano/       MANO_RIGHT.pkl            (licence-gated: never auto-fetched)
 #
 # Files are downloaded to "<name>.part" first and only moved into place once the
 # size check passes, so an interrupted run never leaves a half file that looks
@@ -40,6 +48,19 @@ THIRD_PARTY="${THIRD_PARTY:-${ROOT}/third_party}"
 # Source bases (override for a mirror; see the header).
 WILOR_BASE="${WILOR_BASE:-https://huggingface.co/spaces/rolpotamias/WiLoR/resolve/main/pretrained_models}"
 HAWOR_BASE="${HAWOR_BASE:-https://huggingface.co/ThunderVVV/HaWoR/resolve/main}"
+# VGGT-Omega lives on ModelScope as `facebook/VGGT-Omega` (revision master,
+# FAIR Noncommercial Research License, updated 2026-09-09). The repository holds:
+#   vggt_omega_1b_416_reproduce.pt   4.58 GB   <- what configs/ asks for
+#   vggt_omega_1b_512.pt             4.58 GB
+#   vggt_omega_1b_256_text.pt        5.40 GB
+#   configuration.json / LICENSE.txt / README.md
+# The 416 reproduction file is the reference configuration's checkpoint, so it is
+# fetched by default; the others are mirrors of the same download slot.
+VGGT_MODEL_ID="${VGGT_MODEL_ID:-facebook/VGGT-Omega}"
+VGGT_BASE="${VGGT_BASE:-https://www.modelscope.cn/models/${VGGT_MODEL_ID}/resolve/master}"
+VGGT_FILE="${VGGT_FILE:-vggt_omega_1b_416_reproduce.pt}"
+# 4.58 GB on the hub: 4 GB catches truncation and HTML error pages comfortably.
+VGGT_MIN_BYTES="${VGGT_MIN_BYTES:-4000000000}"
 VGGT_URL="${VGGT_URL:-}"
 ONLY="all"
 DRY_RUN=0
@@ -63,12 +84,23 @@ wants() {
     return 1
 }
 
-# fetch <url> <destination> <label> <min_bytes> [required=1]
+# fetch <destination> <label> <min_bytes> [required=1] <url> [mirror_url...]
+#   Mirrors are tried in order until one passes the size check, so a moved host
+#   or an alternative provider needs no code change.
 #   A failure of an optional asset is reported as [warn] and does not fail the run.
 fetch() {
-    local url="$1" dest="$2" label="$3" min_bytes="$4" required="${5:-1}"
+    local dest="$1" label="$2" min_bytes="$3" required="${4:-1}"
+    local urls=()
+    if [[ $# -ge 5 ]]; then
+        urls=("${@:5}")
+    fi
+    if [[ "${#urls[@]}" -eq 0 ]]; then
+        echo "  [FAIL]   ${label}: no source configured" >&2
+        return 1
+    fi
     local part="${dest}.part"
     local fail_reason=""
+    local url
 
     if [[ -f "${dest}" ]]; then
         local size
@@ -83,14 +115,19 @@ fetch() {
 
     if [[ "${DRY_RUN}" == "1" ]]; then
         echo "  [plan]   ${label}"
-        echo "             ${url}"
+        for url in "${urls[@]}"; do
+            echo "             ${url}"
+        done
         echo "          -> ${dest}"
         return 0
     fi
 
     mkdir -p "$(dirname "${dest}")"   # a dry run must not touch the filesystem
-    echo "  [get]    ${label}"
     local ok=1
+    for url in "${urls[@]}"; do
+    echo "  [get]    ${label}"
+    echo "             ${url}"
+    ok=1
     case "${url}" in
         file://*|/*)
             # Local mirror. GNU wget refuses file:// ("Unsupported scheme"), so
@@ -122,6 +159,11 @@ fetch() {
             fi
             ;;
     esac
+    if [[ "${ok}" == "0" ]]; then
+        break
+    fi
+    echo "           ... trying the next mirror" >&2
+    done
 
     if [[ "${ok}" != "0" ]]; then
         if [[ "${required}" == "1" ]]; then
@@ -208,44 +250,79 @@ status=0
 if wants wilor; then
     echo
     echo "[1/4] WiLoR (Phase 1 detector)"
-    fetch "${WILOR_BASE}/wilor_final.ckpt" \
-        "${DEST}/wilor/wilor_final.ckpt" "WiLoR checkpoint" 10000000 || status=1
-    fetch "${WILOR_BASE}/model_config.yaml" \
-        "${DEST}/wilor/model_config.yaml" "WiLoR model config" 100 || status=1
+    fetch "${DEST}/wilor/wilor_final.ckpt" "WiLoR checkpoint" 10000000 1 \
+        "${WILOR_BASE}/wilor_final.ckpt" || status=1
+    fetch "${DEST}/wilor/model_config.yaml" "WiLoR model config" 100 1 \
+        "${WILOR_BASE}/model_config.yaml" || status=1
     # The YOLO detector is optional: this project detects with WiLoR's own model.
-    fetch "${WILOR_BASE}/detector.pt" \
-        "${DEST}/wilor/detector.pt" "WiLoR detector" 1000000 0 || status=1
+    fetch "${DEST}/wilor/detector.pt" "WiLoR detector" 1000000 0 \
+        "${WILOR_BASE}/detector.pt" || status=1
 fi
 
 if wants hawor; then
     echo
     echo "[2/4] HaWoR (Phase 2 hand reconstruction)"
-    fetch "${HAWOR_BASE}/hawor/checkpoints/hawor.ckpt" \
-        "${DEST}/hawor/checkpoints/hawor.ckpt" "HaWoR checkpoint" 10000000 || status=1
-    fetch "${HAWOR_BASE}/hawor/checkpoints/infiller.pt" \
-        "${DEST}/hawor/checkpoints/infiller.pt" "HaWoR infiller" 1000000 || status=1
+    fetch "${DEST}/hawor/checkpoints/hawor.ckpt" "HaWoR checkpoint" 10000000 1 \
+        "${HAWOR_BASE}/hawor/checkpoints/hawor.ckpt" || status=1
+    fetch "${DEST}/hawor/checkpoints/infiller.pt" "HaWoR infiller" 1000000 1 \
+        "${HAWOR_BASE}/hawor/checkpoints/infiller.pt" || status=1
     # Also ships inside the HaWoR checkout, so a missing mirror copy is not fatal.
-    fetch "${HAWOR_BASE}/hawor/model_config.yaml" \
-        "${DEST}/hawor/checkpoints/model_config.yaml" "HaWoR model config" 100 0 || status=1
+    fetch "${DEST}/hawor/checkpoints/model_config.yaml" "HaWoR model config" 100 0 \
+        "${HAWOR_BASE}/hawor/model_config.yaml" || status=1
 fi
 
 if wants vggt; then
     echo
     echo "[3/4] VGGT-Omega (Phase 3 camera reconstruction)"
-    VGGT_FILE="vggt_omega_1b_416_reproduce.pt"
+    # ModelScope resolve endpoint, then the API form, then the same two for the
+    # 512 checkpoint (identical slot), then the provider CLIs.
+    VGGT_SOURCES=()
     if [[ -n "${VGGT_URL}" ]]; then
-        fetch "${VGGT_URL}" "${DEST}/vggt-omega/${VGGT_FILE}" "VGGT-Omega 416" 100000000 || status=1
+        VGGT_SOURCES+=("${VGGT_URL}")
+    fi
+    for revision in master main; do
+        VGGT_SOURCES+=("https://www.modelscope.cn/models/${VGGT_MODEL_ID}/resolve/${revision}/${VGGT_FILE}")
+    done
+    VGGT_SOURCES+=("https://www.modelscope.cn/api/v1/models/${VGGT_MODEL_ID}/repo?Revision=master&FilePath=${VGGT_FILE}")
+    if [[ "${VGGT_FILE}" != "vggt_omega_1b_512.pt" ]]; then
+        VGGT_SOURCES+=("${VGGT_BASE}/vggt_omega_1b_512.pt")
+    fi
+
+    if fetch "${DEST}/vggt-omega/${VGGT_FILE}" "VGGT-Omega ${VGGT_FILE}" "${VGGT_MIN_BYTES}" 1 \
+        "${VGGT_SOURCES[@]}"; then
+        :
     elif [[ "${DRY_RUN}" == "1" ]]; then
-        echo "  [plan]   hf download facebook/VGGT-Omega ${VGGT_FILE} --local-dir ${DEST}/vggt-omega"
+        :
+    elif command -v modelscope >/dev/null 2>&1; then
+        echo "  [get]    via the ModelScope CLI"
+        mkdir -p "${DEST}/vggt-omega"
+        if modelscope download --model "${VGGT_MODEL_ID}" "${VGGT_FILE}" \
+            --local_dir "${DEST}/vggt-omega"; then
+            # The CLI sometimes nests the checkout; normalise the layout so the
+            # runners find the checkpoint where they expect it.
+            if [[ ! -f "${DEST}/vggt-omega/${VGGT_FILE}" ]]; then
+                nested=$(find "${DEST}/vggt-omega" -name "${VGGT_FILE}" -type f | head -1)
+                [[ -n "${nested}" ]] && mv -f "${nested}" "${DEST}/vggt-omega/${VGGT_FILE}"
+            fi
+        else
+            echo "  [FAIL]   modelscope download failed" >&2
+            status=1
+        fi
     elif command -v hf >/dev/null 2>&1; then
+        echo "  [get]    via the Hugging Face CLI"
         mkdir -p "${DEST}/vggt-omega"
         hf download facebook/VGGT-Omega "${VGGT_FILE}" --local-dir "${DEST}/vggt-omega" || status=1
     else
-        echo "  [FAIL]   the Hugging Face CLI is not installed" >&2
-        echo "           pip install -U huggingface_hub && hf auth login" >&2
-        echo "           then re-run: ./scripts/download_weights.sh --only vggt" >&2
+        echo "  [FAIL]   no ModelScope/HF CLI and every direct URL failed" >&2
+        echo "           pip install modelscope   # then: modelscope download --model ${VGGT_MODEL_ID} ${VGGT_FILE}" >&2
         status=1
     fi
+
+    # Tiny files that ship with the checkpoint; useful provenance, never fatal.
+    fetch "${DEST}/vggt-omega/configuration.json" "VGGT-Omega configuration.json" 10 0 \
+        "https://www.modelscope.cn/models/${VGGT_MODEL_ID}/resolve/master/configuration.json" || true
+    fetch "${DEST}/vggt-omega/LICENSE.txt" "VGGT-Omega licence" 100 0 \
+        "https://www.modelscope.cn/models/${VGGT_MODEL_ID}/resolve/master/LICENSE.txt" || true
 fi
 
 if wants mano; then

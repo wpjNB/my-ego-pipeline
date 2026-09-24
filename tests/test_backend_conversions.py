@@ -11,6 +11,7 @@ import pytest
 
 from ego3d_action.camera.vggt_omega import camera_window_from_output
 from ego3d_action.camera.vggt_omega import find_checkpoint as find_vggt_checkpoint
+from ego3d_action.camera.vggt_omega import resolve_checkpoint as resolve_vggt_checkpoint
 from ego3d_action.detection.wilor import (
     RawDetection,
     build_raw_detection_arrays,
@@ -148,7 +149,8 @@ def test_vggt_checkpoint_is_found_as_a_directory_or_a_file(tmp_path: Path) -> No
     flat.mkdir(parents=True)
     single = flat / "vggt_omega_1b_416_reproduce.pt"
     single.write_bytes(b"x")
-    assert find_vggt_checkpoint(tmp_path / "flat", name) == flat
+    # The exact file for the requested checkpoint beats the enclosing directory.
+    assert find_vggt_checkpoint(tmp_path / "flat", name) == single
 
     deeper = tmp_path / "deeper" / "vggt"
     deeper.mkdir(parents=True)
@@ -160,6 +162,33 @@ def test_vggt_checkpoint_is_found_as_a_directory_or_a_file(tmp_path: Path) -> No
     empty = tmp_path / "nothing"
     empty.mkdir()
     assert find_vggt_checkpoint(empty, name) is None
+
+
+def test_vggt_checkpoint_substitution_is_reported(tmp_path: Path) -> None:
+    """Running the 512 checkpoint when 416 was requested must not be silent."""
+    root = tmp_path / "weights" / "vggt-omega"
+    root.mkdir(parents=True)
+    wanted = root / "vggt_omega_1b_416_reproduce.pt"
+    wanted.write_bytes(b"x")
+    (root / "vggt_omega_1b_512.pt").write_bytes(b"x")
+
+    path, substituted = resolve_vggt_checkpoint(tmp_path / "weights", "VGGT-Omega-1B-416-Reproduction")
+    assert path == wanted and substituted is None
+
+    wanted.unlink()
+    path, substituted = resolve_vggt_checkpoint(tmp_path / "weights", "VGGT-Omega-1B-416-Reproduction")
+    assert path is not None and path.name == "vggt_omega_1b_512.pt"
+    assert substituted == "vggt_omega_1b_512.pt"
+
+    # The documented directory layout resolves with no substitution.
+    (root / "VGGT-Omega-1B-416-Reproduction").mkdir()
+    (root / "VGGT-Omega-1B-416-Reproduction" / "model.safetensors").write_bytes(b"x")
+    path, substituted = resolve_vggt_checkpoint(tmp_path / "weights", "VGGT-Omega-1B-416-Reproduction")
+    assert path is not None and path.name == "VGGT-Omega-1B-416-Reproduction"
+    assert substituted is None
+
+    nothing, substituted = resolve_vggt_checkpoint(tmp_path / "elsewhere", "VGGT-Omega-1B-416-Reproduction")
+    assert nothing is None and substituted is None
 
 
 def make_tracking(total: int = 40) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

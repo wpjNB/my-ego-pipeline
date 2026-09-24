@@ -13,8 +13,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ego3d_action.camera.vggt_omega import VggtWindowRequest, probe, run_window  # noqa: E402
+from ego3d_action.camera import vggt_omega  # noqa: E402
+from ego3d_action.camera.vggt_omega import VggtWindowRequest  # noqa: E402
 from ego3d_action.camera.window import load_camera_window, make_windows  # noqa: E402
+from ego3d_action.io.serialization import save_json  # noqa: E402
 from ego3d_action.cli import base_parser, build_context, fail  # noqa: E402
 from ego3d_action.errors import Ego3DActionError  # noqa: E402
 from ego3d_action.io.artefacts import clip_metadata  # noqa: E402
@@ -35,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
         weights = context.path("paths.weights")
         invocation = BackendInvocation.from_config(context.config)
 
-        status = probe(third_party, weights)
+        status = vggt_omega.probe(third_party, weights)
         print(f"VGGT-Omega backend: {status.format()}  [mode={invocation.mode}]")
 
         num_frames = args.num_frames or int(clip_metadata(layout)["num_frames"])
@@ -59,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
             device=context.device,
             use_depth_confidence=bool(context.config.get("camera.use_depth_confidence", True)),
         )
-        paths = run_window(
+        paths = vggt_omega.run_window(
             request,
             invocation=invocation,
             third_party=third_party,
@@ -74,6 +76,23 @@ def main(argv: list[str] | None = None) -> int:
         for path in paths:
             camera_window = load_camera_window(path)
             print(f"window {camera_window.name}: {camera_window.window.num_frames} frames")
+        substituted = vggt_omega.LAST_RUN.get("checkpoint_substituted")
+        if substituted:
+            print(
+                f"NOTE: the backend used '{substituted}' instead of the requested "
+                f"'{checkpoint}' - record that in the ablation table."
+            )
+        save_json(
+            layout.camera_dir / "vggt_run.json",
+            {
+                "stage": "phase3_camera",
+                "requested_checkpoint": checkpoint,
+                "substituted_checkpoint": substituted,
+                "num_windows": len(paths),
+                "resolution": resolution,
+                "runner": dict(vggt_omega.LAST_RUN),
+            },
+        )
         print(f"camera: {len(paths)} window(s) -> {layout.camera_windows_dir}")
         return 0
     except Ego3DActionError as exc:

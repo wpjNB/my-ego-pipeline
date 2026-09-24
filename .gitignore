@@ -29,3 +29,6 @@ outputs/
 *.mp4
 *.avi
 *.mov
+
+# wget writes this next to the working directory on some failures
+wget-log*

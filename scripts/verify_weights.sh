@@ -22,6 +22,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="${DEST:-${ROOT}/weights}"
+# VGGT-Omega checkpoints are 4.58 GB on ModelScope; override in tests/small mirrors.
+VGGT_MIN_BYTES="${VGGT_MIN_BYTES:-4000000000}"
 QUIET=0
 STRICT=0
 
@@ -43,7 +45,7 @@ ENTRIES=(
   "HaWoR checkpoint|${DEST}/hawor/checkpoints/hawor.ckpt|10000000|torch|1|-"
   "HaWoR infiller|${DEST}/hawor/checkpoints/infiller.pt|1000000|torch|1|-"
   "HaWoR model config|${DEST}/hawor/checkpoints/model_config.yaml|100|text|0|-"
-  "VGGT-Omega 416|${DEST}/vggt-omega/vggt_omega_1b_416_reproduce.pt|100000000|torch|1|-"
+  "VGGT-Omega|${DEST}/vggt-omega/vggt_omega_1b_*.pt|${VGGT_MIN_BYTES}|torch|1|-"
   "MANO right hand|${DEST}/mano/MANO_RIGHT.pkl|1000000|pickle|0|-"
 )
 
@@ -101,7 +103,19 @@ for entry in "${ENTRIES[@]}"; do
     IFS='|' read -r name path min_bytes expected required sha <<<"${entry}"
     rel="${path#"${ROOT}/"}"
 
-    if [[ ! -f "${path}" ]]; then
+    # A path containing '*' means "any of the published files" (VGGT-Omega ships
+    # the 416 reproduction, the 512 and the 256-text checkpoints); the first match
+    # present is the one that gets checked.
+    resolved=""
+    if [[ "${path}" == *"*"* ]]; then
+        for candidate in ${path}; do
+            [[ -f "${candidate}" ]] && resolved="${candidate}" && break
+        done
+    elif [[ -f "${path}" ]]; then
+        resolved="${path}"
+    fi
+
+    if [[ -z "${resolved}" ]]; then
         if [[ "${required}" == "1" ]]; then
             printf '%-20s %-9s %-10s %s\n' "${name}" "MISSING" "-" "${rel}"
             missing=$((missing + 1))
@@ -111,6 +125,8 @@ for entry in "${ENTRIES[@]}"; do
         fi
         continue
     fi
+    path="${resolved}"
+    rel="${path#"${ROOT}/"}"
 
     size=$(wc -c <"${path}")
     if [[ "${size}" -lt "${min_bytes}" ]]; then

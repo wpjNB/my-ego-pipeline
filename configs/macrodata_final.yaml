@@ -39,7 +39,7 @@ camera:
   resolution: 416          # VGGT-Omega: 416 px
   window: 200              # 200 frames
   overlap: 40              # 40-frame overlap
-  checkpoint: VGGT-Omega-1B-416-Reproduction
+  checkpoint: VGGT-Omega-1B-416-Reproduction   # file: vggt_omega_1b_416_reproduce.pt
   use_depth_confidence: true
 
 stitch:

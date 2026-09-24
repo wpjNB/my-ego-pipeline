@@ -40,6 +40,30 @@ SUPPORTED_CHECKPOINTS = (
     "VGGT-Omega-1B-256-Text-Alignment",
 )
 
+#: The file name each published checkpoint is distributed under. A checkpoint
+#: may arrive as a directory of shards or as a single ``.pt``; both are accepted.
+CHECKPOINT_FILENAMES: dict[str, tuple[str, ...]] = {
+    "VGGT-Omega-1B-416-Reproduction": (
+        "vggt_omega_1b_416_reproduce.pt",
+        "vggt_omega_1b_416_reproduction.pt",
+        "model.safetensors",
+    ),
+    "VGGT-Omega-1B-512": ("vggt_omega_1b_512.pt", "model.safetensors"),
+    "VGGT-Omega-1B-256-Text-Alignment": ("vggt_omega_1b_256_text_alignment.pt", "model.safetensors"),
+}
+
+#: Any of these identifies a VGGT-Omega checkpoint, whatever it was requested as.
+GENERIC_CHECKPOINT_FILENAMES = (
+    "vggt_omega_1b_512.pt",
+    "vggt_omega_1b_416_reproduce.pt",
+    "vggt_omega_1b_416_reproduction.pt",
+    "vggt_omega_1b_256_text_alignment.pt",
+)
+
+#: Payload of the most recent backend run, for provenance (which checkpoint was
+#: actually used, how many windows were written, ...).
+LAST_RUN: dict[str, object] = {}
+
 
 @dataclass(frozen=True)
 class VggtWindowRequest:
@@ -83,23 +107,55 @@ def find_checkpoint(weights_root: str | Path, checkpoint: str) -> Path | None:
     """
     root = Path(weights_root)
     stem = checkpoint.replace("/", "_")
-    candidates = [
+    wanted = CHECKPOINT_FILENAMES.get(checkpoint, ())
+    candidates: list[Path] = [
         root / checkpoint,
         root / "vggt-omega" / checkpoint,
         root / "vggt" / checkpoint,
-        root / "vggt-omega" / f"{stem}.pt",
-        root / "vggt-omega" / f"{checkpoint}.pt",
-        root / "vggt" / f"{checkpoint}.pt",
-        root / f"{checkpoint}.pt",
-        root / "vggt-omega",
-        root / "vggt",
     ]
+    for directory in (root / "vggt-omega", root / "vggt", root):
+        candidates.extend(directory / name for name in wanted)
+    candidates.extend(
+        [
+            root / "vggt-omega" / f"{stem}.pt",
+            root / "vggt-omega" / f"{checkpoint}.pt",
+            root / "vggt" / f"{checkpoint}.pt",
+            root / f"{checkpoint}.pt",
+        ]
+    )
+    # Fall back to whatever VGGT-Omega checkpoint is actually on disk, but never
+    # silently: ``resolve_checkpoint`` reports the substitution to the caller.
+    for directory in (root / "vggt-omega", root / "vggt", root):
+        candidates.extend(directory / name for name in GENERIC_CHECKPOINT_FILENAMES)
+    candidates.extend([root / "vggt-omega", root / "vggt"])
     for candidate in candidates:
         if candidate.is_dir() and any(candidate.iterdir()):
             return candidate
         if candidate.is_file() and candidate.suffix in {".pt", ".pth", ".safetensors", ".ckpt"}:
             return candidate
     return None
+
+
+def resolve_checkpoint(weights_root: str | Path, checkpoint: str) -> tuple[Path | None, str | None]:
+    """Resolve ``checkpoint`` and say which file was actually used.
+
+    Returns ``(path, substituted_name)`` where ``substituted_name`` is ``None``
+    when the requested checkpoint was found, or the file name of the checkpoint
+    that was used instead. Callers must surface a substitution - running the 512
+    checkpoint while the configuration asks for the 416 reproduction is allowed,
+    but it has to be visible in the logs, the runner summary and the ablation
+    table, never silently.
+    """
+    path = find_checkpoint(weights_root, checkpoint)
+    if path is None:
+        return None, None
+    if path.is_file():
+        if path.name in CHECKPOINT_FILENAMES.get(checkpoint, ()) or path.stem == checkpoint:
+            return path, None
+        return path, path.name
+    if path.name == checkpoint or checkpoint in str(path):
+        return path, None
+    return path, path.name
 
 
 def require(third_party: str | Path, weights_root: str | Path) -> BackendStatus:
@@ -160,6 +216,8 @@ def run_window(
     ]
     payload = run_runner(spec, args, log_path=log_path)
     logger.info("VGGT-Omega runner reported %s", json.dumps(payload, sort_keys=True))
+    LAST_RUN.clear()
+    LAST_RUN.update(payload)
 
     from .window import make_windows
 

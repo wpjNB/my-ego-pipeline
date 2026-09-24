@@ -21,7 +21,7 @@ model (its licence is separate). What is present:
 | Orchestrator env `ego3d_base` | yes | `environment-base.yml`, 249 tests green |
 | HOT3D sample (8 clips, 3600 frames) | yes | `data/samples/lerobot_v3` (git-ignored) |
 | Synthetic MANO stand-in | yes, generated | `python scripts/make_synthetic_mano.py` |
-| WiLoR checkpoint + the other two | **no** | `weights/wilor`, `weights/hawor`, `weights/vggt-omega` |
+| WiLoR checkpoint + the other two | **no** | `weights/wilor`, `weights/hawor/checkpoints`, `weights/vggt-omega` |
 | Backend checkouts | **no** | `third_party/{WiLoR,HaWoR,VGGT-Omega}` |
 | MANO model (for 21-joint references) | **no** | `weights/mano`, licence-gated |
 

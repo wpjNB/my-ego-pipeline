@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-09-24 10:20 (+08:00) - real VGGT-Omega source (ModelScope) wired in
+
+The VGGT-Omega checkpoint URL was a placeholder; the author pointed the project
+at the actual hub. Read from the ModelScope files page (revision ``master``):
+
+| file | size |
+| --- | --- |
+| ``vggt_omega_1b_416_reproduce.pt`` | 4.58 GB (the reference configuration's checkpoint) |
+| ``vggt_omega_1b_512.pt`` | 4.58 GB |
+| ``vggt_omega_1b_256_text.pt`` | 5.40 GB |
+| ``configuration.json`` / ``LICENSE.txt`` / ``README.md`` | 64 B / 11.72 KB / 2.34 KB |
+
+Licence: FAIR Noncommercial Research License; repo updated 2026-09-09.
+
+* ``scripts/download_weights.sh`` now defaults to
+  ``VGGT_MODEL_ID=facebook/VGGT-Omega`` and ``VGGT_FILE=vggt_omega_1b_416_reproduce.pt``,
+  with the 512 file and the ModelScope API endpoint as ordered fallbacks and
+  ``modelscope``/``hf`` CLIs after that; ``configuration.json`` and
+  ``LICENSE.txt`` are fetched as optional provenance. ``fetch`` now takes
+  *several* URLs and tries them in order, so a moved host needs no code change.
+* ``scripts/verify_weights.sh`` accepts any published VGGT-Omega file name
+  (glob), raises its floor to 4 GB so a truncated 4.58 GB download cannot pass,
+  and can be tuned with ``VGGT_MIN_BYTES`` for small mirrors/tests.
+* ``camera/vggt_omega.py`` gained ``CHECKPOINT_FILENAMES`` and
+  ``resolve_checkpoint()``: the requested checkpoint is resolved to the actual
+  file, and a substitution (e.g. only the 512 file on disk while 416 was asked
+  for) is reported in the runner warning, the runner JSON summary and
+  ``camera/vggt_run.json`` - never silently.
+* Test suite: **267 passed**.
+
 ## 2026-09-23 22:35 (+08:00) - bash weight scripts replace the Python downloader
 
 At the author's request the manifest-driven Python downloader was dropped

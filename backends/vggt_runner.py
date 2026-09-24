@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from ego3d_action.camera.depth import scale_intrinsics  # noqa: E402
 from ego3d_action.camera.vggt_omega import (  # noqa: E402
     camera_window_from_output,
-    find_checkpoint,
+    resolve_checkpoint,
 )
 from ego3d_action.camera.window import make_windows, save_camera_window  # noqa: E402
 from ego3d_action.geometry.transforms import invert_rigid  # noqa: E402
@@ -39,6 +39,9 @@ SUPPORTED_CHECKPOINTS = (
 )
 
 _MODEL_CACHE: dict[tuple[str, str], object] = {}
+#: Which checkpoint was actually resolved, so the JSON summary can report a
+#: substitution (e.g. only the 512 file is on disk while 416 was requested).
+_RESOLVED: dict[str, object] = {"path": None, "substituted": None}
 
 
 def emit(payload: dict[str, object]) -> None:
@@ -65,12 +68,21 @@ def load_model(args: argparse.Namespace) -> object:
     if key in _MODEL_CACHE:
         return _MODEL_CACHE[key]
     weights = Path(args.weights)
-    checkpoint_dir = find_checkpoint(weights, args.checkpoint)
+    checkpoint_dir, substituted = resolve_checkpoint(weights, args.checkpoint)
     if checkpoint_dir is None:
         raise FileNotFoundError(
             f"no checkpoint for '{args.checkpoint}' under {weights}; run "
             "scripts/download_weights.sh --only vggt (see doc_auto/setup.md)"
         )
+    if substituted is not None:
+        print(
+            f"WARNING: requested checkpoint '{args.checkpoint}' was not found; using "
+            f"'{substituted}' instead. This is a DIFFERENT checkpoint - record it in the "
+            "ablation table (mixing 416/512 numbers is not comparable).",
+            file=sys.stderr,
+        )
+    _RESOLVED["path"] = str(checkpoint_dir)
+    _RESOLVED["substituted"] = substituted
     from vggt.models.vggt import VGGT  # noqa: PLC0415 - backend import
 
     model = VGGT.from_pretrained(str(checkpoint_dir))
@@ -234,6 +246,8 @@ def main(argv: list[str] | None = None) -> int:
                 "backend": "vggt",
                 "resolution": args.resolution,
                 "checkpoint": args.checkpoint,
+                "checkpoint_path": _RESOLVED["path"],
+                "checkpoint_substituted": _RESOLVED["substituted"],
                 "windows": written,
                 "output_dir": str(out_dir),
             }
