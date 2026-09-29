@@ -4,8 +4,12 @@ CONDA ?= conda
 ENV ?= ego3d_base
 CLIP ?= demo01
 CONFIG ?= configs/macrodata_final.yaml
+MANIFEST ?= configs/clips.example.yaml
+HOSTS ?= configs/hosts.local.yaml
+SHARDS ?= 1
+PARALLEL ?= 1
 
-.PHONY: help env install test test-fast dry-run clean smoke
+.PHONY: help env install test test-fast dry-run clean smoke batch dry-batch
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -38,3 +42,13 @@ dry-run: ## print the pipeline plan without running the model backends
 clean: ## remove caches (never touches data/, weights/ or third_party/)
 	find . -name '__pycache__' -type d -prune -exec rm -rf {} +
 	rm -rf .pytest_cache .ruff_cache
+
+batch: ## batch-run a clip manifest locally with N window shards (mock by default)
+	$(CONDA) run -n $(ENV) python scripts/run_batch.py \
+		--manifest $(MANIFEST) --config $(CONFIG) \
+		--hosts $(HOSTS) --shards $(SHARDS) --max-parallel $(PARALLEL) --skip-existing
+
+dry-batch: ## print the batch unit plan without running anything
+	$(CONDA) run -n $(ENV) python scripts/run_batch.py \
+		--manifest $(MANIFEST) --config $(CONFIG) \
+		--hosts $(HOSTS) --shards $(SHARDS) --dry-run

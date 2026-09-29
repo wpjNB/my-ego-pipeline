@@ -18,6 +18,7 @@ import numpy as np
 
 from ..errors import StageIOError
 from ..runtime.backend import BackendSpec, BackendStatus, probe_backend, require_backend
+from ..runtime.sharding import WindowSelection
 from ..runtime.subprocess_backend import BackendInvocation, run_runner
 from .window import CameraWindow, WindowRange, load_camera_window
 
@@ -174,12 +175,24 @@ def run_window(
     window: int = 200,
     overlap: int = 40,
     log_path: Path | None = None,
+    selection: WindowSelection | None = None,
+    skip_existing: bool = False,
+    precision: str | None = None,
 ) -> list[Path]:
     """Run the VGGT-Omega backend and return the window files it wrote.
 
     Model loading dominates the runtime, so the backend is invoked **once** for
-    the whole clip and writes every window into ``out_dir``; the schedule is
+    the clip and writes every window into ``out_dir``; the schedule is
     re-derived and every written file is validated before it is trusted.
+
+    ``selection`` lets one shard request only its windows. Because VGGT windows
+    are independent, this *is* the parallel unit: N shards on N GPUs see exactly
+    the same schedule as one whole-clip run. ``skip_existing`` reuses a shard
+    whose windows and provenance marker are already on disk.
+
+    ``precision`` is forwarded to the runner (``auto``/``fp32``/``fp16``); fp16
+    halves the 1B checkpoint's resident memory (4.26 -> 2.13 GiB), which is how
+    Phase 3 fits on a 12 GB GPU that another job is sharing.
 
     In mock mode this executes ``backends/mock_backend.py vggt``.
 
@@ -191,6 +204,7 @@ def run_window(
     if not invocation.is_mock:
         require(third_party, weights_root)
 
+    active = selection or WindowSelection()
     spec, prefix = invocation.resolve("vggt", mock_subcommand="vggt")
     args = [
         *prefix,
@@ -214,6 +228,14 @@ def run_window(
         "--weights",
         str(weights_root),
     ]
+    if not active.is_whole:
+        args += ["--shard", f"{active.shard.index}/{active.shard.count}"]
+        if active.window_start is not None and active.window_end is not None:
+            args += ["--window-range", f"{active.window_start}-{active.window_end}"]
+    if skip_existing:
+        args.append("--skip-existing")
+    if precision is not None:
+        args += ["--precision", str(precision)]
     payload = run_runner(spec, args, log_path=log_path)
     logger.info("VGGT-Omega runner reported %s", json.dumps(payload, sort_keys=True))
     LAST_RUN.clear()
@@ -222,8 +244,14 @@ def run_window(
     from .window import make_windows
 
     target = Path(out_dir)
+    expected = active.select(make_windows(num_frames, window=window, overlap=overlap))
+    if not expected:
+        raise StageIOError(
+            f"selection '{active.describe()}' matched no VGGT window; the clip has "
+            f"{len(make_windows(num_frames, window=window, overlap=overlap))} window(s)"
+        )
     paths: list[Path] = []
-    for rng in make_windows(num_frames, window=window, overlap=overlap):
+    for rng in expected:
         path = target / f"{rng.start:06d}_{rng.end - 1:06d}.npz"
         if not path.is_file():
             raise StageIOError(

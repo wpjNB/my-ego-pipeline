@@ -11,16 +11,24 @@ from ego3d_action.cli import parse_overrides
 from ego3d_action.config import load_config, validate_config
 from ego3d_action.errors import ConfigError
 
-CONFIG_FILES = ("default.yaml", "macrodata_final.yaml", "hot3d.yaml")
+# Shipped configs with the camera schedule each one pins: the reference
+# profiles all carry 200/40; hot3d_p100.yaml is the documented P100 host
+# variant (sm_60 has no flash-attention kernel, so 8 is the OOM ceiling).
+CONFIG_FILES = {
+    "default.yaml": (200, 40),
+    "macrodata_final.yaml": (200, 40),
+    "hot3d.yaml": (200, 40),
+    "hot3d_p100.yaml": (8, 4),
+}
 
 
-@pytest.mark.parametrize("name", CONFIG_FILES)
-def test_shipped_configs_are_valid(name: str) -> None:
+@pytest.mark.parametrize("name,expected_camera", sorted(CONFIG_FILES.items()))
+def test_shipped_configs_are_valid(name: str, expected_camera: tuple[int, int]) -> None:
     config = load_config(Path("configs") / name)
     assert config.get("hand.window") == 16
     assert config.get("hand.overlap") == 8
-    assert config.get("camera.window") == 200
-    assert config.get("camera.overlap") == 40
+    assert config.get("camera.window") == expected_camera[0]
+    assert config.get("camera.overlap") == expected_camera[1]
 
 
 def test_macrodata_final_matches_the_reference_table() -> None:

@@ -1,0 +1,109 @@
+# HOT3D evaluation profile, Tesla P100 host variant (aius-01).
+#
+# Same dataset locations and benchmark protocol as hot3d.yaml (which stays the
+# hardware-independent reference at 200/40 windows and per-backend envs), with
+# the three deviations this host forces - the same decisions unified.yaml
+# records, kept apart so the benchmark definition itself does not drift with
+# the hardware:
+#
+#   1. One shared `ego3d` env for all backends (torch 2.8+cu126): the
+#      torch-1.13 pin only existed for DROID-SLAM + Metric3D, which
+#      VGGT-Omega replaces. The per-backend envs are never created here.
+#   2. VGGT fp16 (aggregator 4.26 -> 2.13 GiB resident); HaWoR stays fp32.
+#   3. camera.window 8, overlap 4, NOT the reference 200/40: Tesla P100
+#      (sm_60) has no flash-attention kernel, so PyTorch's
+#      scaled_dot_product_attention falls back to the memory-hungry math path
+#      and a 12 GB card OOMs past ~8 frames. This is what the 2026-09-29
+#      hot3d_ep000 run used; the ablation table records it.
+runtime:
+  device: auto
+  seed: 0
+  log_level: INFO
+
+paths:
+  data_root: data/hot3d    # the HOT3D profile keeps its clips apart from ad-hoc ones
+  third_party: third_party
+  weights: weights
+  outputs: outputs
+  hot3d_root: data/hot3d
+  lerobot_root: data/samples/lerobot_v3
+  mano_model: weights/mano # enables 21-joint references; use --no-mano to fall
+                           # back to wrist-only (the directory is git-ignored)
+  backends: backends
+
+backends:
+  mode: real               # real | mock  (mock = deterministic stand-in, never a model)
+  # One shared environment on this host, same decision as unified.yaml: the
+  # torch-1.13 pin only existed for DROID-SLAM + Metric3D, which VGGT-Omega
+  # replaces. The three per-backend envs (ego3d_wilor/...) are never created.
+  python:
+    wilor: ["/home/pjwang/miniforge3/envs/ego3d/bin/python"]
+    hawor: ["/home/pjwang/miniforge3/envs/ego3d/bin/python"]
+    vggt: ["/home/pjwang/miniforge3/envs/ego3d/bin/python"]
+  # fp16 halves VGGT's resident aggregator; HaWoR stays fp32 (its infiller
+  # mixes the camera trajectory with float32 model outputs). See unified.yaml.
+  precision: fp16
+  hand_precision: fp32
+  timeout_seconds: 7200
+  seed: 0
+
+preprocess:
+  image_format: jpg
+  jpeg_quality: 2
+
+detection:
+  detector_confidence: 0.1
+  # Tracker thresholds relaxed below the reference profile's 0.75/4, measured
+  # on hot3d_ep000 (2026-09-29, doc_auto/ablation.md): hand coverage
+  # 54.8 % -> 78.1 % (left detection 22.7 % -> 58.7 %), wrist error improves
+  # slightly, MPJPE stays ~flat (+2.2 mm - the recovered frames are the hard
+  # ones). Continuity is worth more than the metric delta on this host.
+  min_confidence: 0.5
+  max_gap: 8
+  iou_threshold: 0.20
+
+hand:
+  window: 16
+  overlap: 8
+  batch_size: 4
+
+camera:
+  resolution: 416
+  # NOT the reference 200/40: Tesla P100 (sm_60) has no flash-attention kernel,
+  # so PyTorch's scaled_dot_product_attention falls back to the memory-hungry
+  # math path and a 12 GB card OOMs past ~8 frames. 8/4 is the P100 maximum
+  # with idle cards; the ablation table must note which window was used.
+  window: 8
+  overlap: 4
+  checkpoint: VGGT-Omega-1B-416-Reproduction   # file: vggt_omega_1b_416_reproduce.pt
+  use_depth_confidence: true
+
+stitch:
+  pixel_stride: 8
+  min_depth: 0.001
+  max_depth: null
+  depth_confidence_floor: null
+  inlier_threshold: null
+  ransac_iterations: 128
+  blend: true
+  normalize_world: true
+
+refinement:
+  camera_filter_passes: 1
+  bone_scale_max_correction: 0.035
+  bone_scale_reference: median
+  wrist_depth_lambda: 0.2
+  wrist_depth_max_change: null
+
+evaluation:
+  dataset: hot3d
+  chunk_seconds: 1.0       # 1-second action chunks (Action-MPJPE)
+  strict_artefacts: true
+  episodes: []             # filled in from the HOT3D sequence list
+  report_json: outputs/hot3d_report.json
+
+visualization:
+  enabled: true
+  fps: null
+  draw_bbox: true
+  draw_confidence: true

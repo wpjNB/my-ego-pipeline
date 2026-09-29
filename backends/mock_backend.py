@@ -32,6 +32,15 @@ from ego3d_action.fusion.trajectory import build_trajectory  # noqa: E402
 from ego3d_action.io.serialization import save_json, save_npz  # noqa: E402
 from ego3d_action.testing import synthetic  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _shard_cli import (  # noqa: E402
+    add_shard_arguments,
+    partition_is_reusable,
+    record_partition,
+    select_windows,
+    selection_from_args,
+)
+
 
 def _emit(payload: dict[str, object]) -> None:
     """Print the single machine-readable summary line."""
@@ -92,8 +101,31 @@ def command_hawor(args: argparse.Namespace) -> int:
     )
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    selection = selection_from_args(args)
+    ranges = select_windows(request.ranges(), selection)
+    params = {
+        "num_frames": num_frames,
+        "window": args.window,
+        "overlap": args.overlap,
+        "seed": args.seed,
+    }
+    if args.skip_existing and partition_is_reusable(
+        out_dir, stage="hand", ranges=ranges, params=params, selection=selection
+    ):
+        _emit(
+            {
+                "status": "ok",
+                "backend": "mock-hawor",
+                "num_frames": num_frames,
+                "windows": [f"{s:06d}_{e - 1:06d}.npz" for s, e in ranges],
+                "output_dir": str(out_dir),
+                "reused": True,
+            }
+        )
+        return 0
+
     written: list[str] = []
-    for start, end in request.ranges():
+    for start, end in ranges:
         path = out_dir / f"{start:06d}_{end - 1:06d}.npz"
         save_npz(
             path,
@@ -105,6 +137,9 @@ def command_hawor(args: argparse.Namespace) -> int:
             betas=np.zeros((end - start, 2, 10)),
         )
         written.append(path.name)
+    record_partition(
+        out_dir, stage="hand", ranges=ranges, params=params, selection=selection
+    )
     _emit(
         {
             "status": "ok",
@@ -127,11 +162,38 @@ def command_vggt(args: argparse.Namespace) -> int:
     )
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    selection = selection_from_args(args)
+    windows = select_windows(windows, selection)
+    params = {
+        "num_frames": args.num_frames,
+        "window": args.window,
+        "overlap": args.overlap,
+        "resolution": args.resolution,
+        "seed": args.seed,
+    }
+    if args.skip_existing and partition_is_reusable(
+        out_dir, stage="camera", ranges=windows, params=params, selection=selection
+    ):
+        _emit(
+            {
+                "status": "ok",
+                "backend": "mock-vggt",
+                "resolution": args.resolution,
+                "windows": [f"{w.start:06d}_{w.end - 1:06d}.npz" for w in windows],
+                "output_dir": str(out_dir),
+                "reused": True,
+            }
+        )
+        return 0
+
     written: list[str] = []
     for window in windows:
         path = out_dir / f"{window.start:06d}_{window.end - 1:06d}.npz"
         save_camera_window(window, path)
         written.append(path.name)
+    record_partition(
+        out_dir, stage="camera", ranges=windows, params=params, selection=selection
+    )
     _emit(
         {
             "status": "ok",
@@ -220,6 +282,7 @@ def build_parser() -> argparse.ArgumentParser:
     hawor.add_argument("--window", type=int, default=16)
     hawor.add_argument("--overlap", type=int, default=8)
     hawor.add_argument("--frames", default=None)
+    add_shard_arguments(hawor)
     add_backend_args(hawor)
     hawor.set_defaults(func=command_hawor)
 
@@ -234,6 +297,7 @@ def build_parser() -> argparse.ArgumentParser:
     vggt.add_argument("--depth-width", type=int, default=synthetic.DEFAULT_DEPTH_SIZE[1])
     vggt.add_argument("--checkpoint", default="VGGT-Omega-1B-416-Reproduction")
     vggt.add_argument("--frames", default=None)
+    add_shard_arguments(vggt)
     add_backend_args(vggt)
     vggt.set_defaults(func=command_vggt)
 

@@ -1,15 +1,32 @@
 # Implementation status
 
-Last modified: 2026-09-24 22:12 (+08:00)
+Last modified: 2026-09-29 (+08:00)
 
-Test suite: **286 passed in ~20 s** on the CPU-only laptop
-(`conda run -n ego3d_base python -m pytest -q`).
+Test suite: **392 passed** in ~85 s on a CPU-only interpreter
+(`conda run -n ego3d_base python -m pytest -q`). 119 of those are newer than
+the M0 suite: the sharding/provenance/executor/batch modules, the sharded E2E
+comparison, and the HaWoR focal-resolution + cache-invalidation tests.
 
-Asset state on this checkout: all three backends' weights are downloaded and
-verified (10.8 GB), the three repositories are cloned, and MANO is installed for
-both hands at every path the pipeline reads. What is *not* set up yet are the
-three backend conda environments (`ego3d_wilor`, `ego3d_hawor`, `ego3d_vggt`) -
-the first real Phase 1-3 run needs them and a GPU.
+The `-vsync` wart is gone: `io/video.py` probes ffmpeg and picks
+`-fps_mode passthrough` (5.1+) over `-vsync 0`, so any ffmpeg works.
+
+Asset state on this checkout (aius-01, 3x Tesla P100-12GB): all three
+backends' weights are downloaded and verified (10.8 GB), the three
+repositories are cloned, MANO is installed, and the backends run in **one
+shared conda env `ego3d`** (torch 2.8.0+cu126) instead of the three
+per-backend envs - the torch-1.13 pin only existed for DROID-SLAM + Metric3D,
+which VGGT-Omega replaces (`configs/unified.yaml` / `configs/hot3d.yaml`
+record the decision). All three runners pass `--check` here and have run for
+real (see below).
+
+Data caveats from the partial sync that produced this checkout:
+`data/hot3d/hot3d_ep000` and `hot3d_ep003` had 0-byte frames and truncated
+artefact stubs; both were re-imported from `data/samples/lerobot_v3` with MANO
+references and re-run through the real chain on 2026-09-29 (`hot3d_real000`,
+`real01`, `real24` are intact; `real24` still needs its Phase 3-6). All debug
+videos are transcoded to H.264 after writing (browsers play them);
+`outputs/visual_gallery.html` + `python -m http.server 8899 --bind 127.0.0.1`
+serves every clip's videos and stills in one page.
 
 ## Complete and tested (CPU)
 
@@ -28,6 +45,10 @@ the first real Phase 1-3 run needs them and a GPU.
 | Phase 0 video IO | `io/video.py`, `io/frames.py` | `tests/test_frames_io.py` |
 | Synthetic scene / mock data | `testing/synthetic.py` | `tests/test_mock_pipeline.py` |
 | Runner protocol | `runtime/subprocess_backend.py` | `tests/test_runner_protocol.py` |
+| Work slicing / shard partition | `runtime/sharding.py` | `tests/test_sharding.py` |
+| Content-addressed idempotency | `runtime/provenance.py` | `tests/test_provenance.py` |
+| Host capabilities + local/ssh executors | `runtime/executor.py` | `tests/test_batch.py` |
+| Batch dispatch / retries / ledger | `runtime/batch.py`, `scripts/run_batch.py` | `tests/test_batch.py`, `tests/test_batch_e2e.py` |
 | Full pipeline (mock backend) | `scripts/run_pipeline.py` + all stages | `tests/test_mock_pipeline.py` |
 | LeRobot v3 reader | `datasets/lerobot.py` | `tests/test_lerobot.py` |
 | HOT3D reference conversion | `datasets/hot3d_gt.py` | `tests/test_lerobot.py` |
@@ -36,13 +57,21 @@ the first real Phase 1-3 run needs them and a GPU.
 | MANO forward kinematics | `hand/mano_model.py` | `tests/test_mano_model.py` |
 | Model-output conversions | `detection/wilor.py`, `hand/hawor.py`, `camera/vggt_omega.py` | `tests/test_backend_conversions.py` |
 
-## Interfaces in place; only the model call is blocked on the GPU server
+## Interfaces in place; real backends run on this host
 
-| Backend | Adapter + runner | Behaviour today |
+| Backend | Adapter + runner | Status here |
 | --- | --- | --- |
-| WiLoR | `detection/wilor.py` + `backends/wilor_runner.py` | `load_detector` (checkpoint/config discovery) and the output->artefact conversion are written and the conversion is tested; the detector call needs the checkout + GPU |
-| HaWoR | `hand/hawor.py` + `backends/hawor_runner.py` | our tracking is written into HaWoR's `model_tracks.npy`, the call sequence (motion -> slam -> infiller -> run_mano) and the camera-space conversion are written; running them needs the checkpoint + GPU |
-| VGGT-Omega | `camera/vggt_omega.py` + `backends/vggt_runner.py` | model loading by checkpoint directory, `pose_encoding_to_extri_intri` decoding, intrinsics rescaling to the depth grid and window validation are written; inference needs the checkpoint + GPU |
+| WiLoR | `detection/wilor.py` + `backends/wilor_runner.py` | Runs for real (hot3d_ep000: 450 frames in 24 s, coverage left 22.7 % / right 86.9 %) |
+| HaWoR | `hand/hawor.py` + `backends/hawor_runner.py` | Runs for real, driven by the VGGT trajectory (`camera_source: vggt`, no DROID-SLAM); takes a resolved `--focal` and drops stale caches when the focal changes |
+| VGGT-Omega | `camera/vggt_omega.py` + `backends/vggt_runner.py` | Runs for real (112 windows of 8 frames, fp16 aggregator, 8.5 GiB resident on a P100) |
+
+The first real end-to-end run happened 2026-09-28 on `real01` (see changelog);
+on 2026-09-29 the full chain ran on `hot3d_ep000` and was scored against the
+MANO reference: **Action-MPJPE 183.08 mm** with the resolved focal vs
+**664.72 mm** at HaWoR's silent 600 px default (`doc_auto/ablation.md` has the
+breakdown). The 09-28 session also fixed seven real-run defects, including
+`device: auto` resolving to CPU without torch (now falls back to
+`nvidia-smi -L`) and HaWoR's checkpoint being restored onto the GPU.
 
 Every step before the model call is unit-tested, and every failure path names
 the missing checkout, weights, checkpoint or device - a half-configured server
@@ -50,17 +79,26 @@ still cannot emit an artefact that looks like a successful run.
 
 Running the whole pipeline today works through `backends.mode: mock`
 (`configs/mock.yaml`), which substitutes a deterministic stand-in for the three
-models and marks every artefact with `backend_mode: mock`.
+models, **and** through `backends.mode: real` on this host's P100s
+(`configs/unified.yaml`; `configs/hot3d_p100.yaml` for the HOT3D benchmark,
+whose reference profile stays in `configs/hot3d.yaml`).
 
 ## Next steps, in order
 
-1. Run Phases 1-3 on one GPU clip, then check the debug videos and `--check`
-   output; expect small API drift (WiLoR's output fields, VGGT's pose decoding
-   helper) and fix it against the installed versions.
-2. Fill the real-data ablation table (`doc_auto/ablation.md`) from
-   `scripts/evaluate_hot3d.py` outputs.
-3. Decide whether HaWoR's infiller SLAM step can be skipped (it currently costs
-   a full SLAM run per clip just to carry coordinates for Phase 2).
-4. Fetch HaWoR's `eigen` submodule (`git -C third_party/HaWoR submodule update
-   --init --recursive`) - gitlab refused the recursive clone of that one and
-   DROID-SLAM builds against it.
+1. **Detection is the weakest stage.** WiLoR covers the left hand in only
+   22.7 % of hot3d_ep000's frames, so half the hand-frames (and most of the
+   left hand) never reach evaluation. Options: lower `detection.min_confidence`
+   for tracking, re-detect per window, or pick/weight episodes where both
+   hands are seen. This caps every aggregate number.
+2. **Multi-episode evaluation.** Re-import `hot3d_ep003` (0-byte frame stubs),
+   run the same chain, and average the table over episodes instead of quoting
+   one. `real24` still needs its Phase 3-6 as well.
+3. **Full ablation table.** The focal and post-processing rows are filled
+   (`doc_auto/ablation.md`); the upstream rows (HaWoR without VGGT, +40
+   overlap, HaWoR-original pipeline) still need dedicated runs.
+4. **VGGT window size on better hardware.** 200/40 is what the reference
+   configuration wants; the P100 tops out at 8. On an A100/H100, re-run Phase
+   3-7 at 200/40 and update the table.
+5. HaWoR's `eigen` submodule fetch (`git -C third_party/HaWoR submodule update
+   --init --recursive`) - only needed if the DROID-SLAM path is ever revived;
+   the pipeline no longer uses it.

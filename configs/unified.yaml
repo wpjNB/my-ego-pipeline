@@ -1,0 +1,107 @@
+# Real backends on a single GPU box with one shared environment.
+#
+# Same parameters as `macrodata_final.yaml` (the reference configuration) with
+# two deliberate deviations, both forced by the hardware this file was written
+# on - and both reported in the run summary, never silent:
+#
+#   1. `backends.python` points every backend at the single `ego3d` env instead
+#      of `ego3d_wilor` / `ego3d_hawor` / `ego3d_vggt`. One env is enough: VGGT
+#      wants torch>=2.6, WiLoR wants smplx==0.1.28 (both satisfied by torch
+#      2.8+cu126 / smplx 0.1.28) and HaWoR's torch-1.13 pin only existed for
+#      DROID-SLAM + Metric3D, which this project replaces with VGGT-Omega.
+#
+#   2. `camera.window` is 8, not 200. Tesla P100 (sm_60) has no flash-
+#      attention kernel, so PyTorch's scaled_dot_product_attention falls back to
+#      the memory-hungry math path and a 12 GB card OOMs past ~8 frames. Raise
+#      this on a card with flash attention (A100/H100) to get the reference
+#      configuration back; the ablation table must note which was used.
+runtime:
+  device: auto
+  seed: 0
+  log_level: INFO
+
+paths:
+  data_root: data
+  third_party: third_party
+  weights: weights
+  outputs: outputs
+  backends: backends
+  mano_model: weights/mano
+
+backends:
+  mode: real
+  python:
+    wilor: ["/home/pjwang/miniforge3/envs/ego3d/bin/python"]
+    hawor: ["/home/pjwang/miniforge3/envs/ego3d/bin/python"]
+    vggt: ["/home/pjwang/miniforge3/envs/ego3d/bin/python"]
+  # fp16 halves the resident weights (VGGT 4.26 -> 2.13 GiB, HaWoR 3.0 -> 1.5
+  # GiB). On this host each P100 is also running another job, so the fp32
+  # working set does not fit in the ~5.5 GiB that is free per card.
+  precision: fp16
+  # HaWoR keeps fp32: its infiller mixes the camera trajectory (from Phase 3)
+  # with float32 model outputs, and fp16 weights make that einsum raise
+  # "expected scalar type Double but found Float". The CPU-restore fix removes
+  # the real memory hog there anyway (Lightning used to materialise the whole
+  # 3.35 GB checkpoint on the GPU during load).
+  hand_precision: fp32
+  timeout_seconds: 7200
+  seed: 0
+
+preprocess:
+  image_format: jpg
+  jpeg_quality: 2
+
+detection:
+  detector_confidence: 0.1
+  # Tracker thresholds relaxed below the reference 0.75/4 (measured on
+  # hot3d_ep000, 2026-09-29: hand coverage 54.8 % -> 78.1 %, MPJPE ~flat,
+  # wrist slightly better - see doc_auto/ablation.md). Continuity wins here.
+  min_confidence: 0.5
+  max_gap: 8
+  iou_threshold: 0.20
+
+hand:
+  window: 16
+  overlap: 8
+  batch_size: 4
+
+camera:
+  resolution: 416
+  # Still not the reference 200/40, and never will be on this host: Tesla P100
+  # (sm_60) has no flash-attention kernel, so PyTorch's
+  # scaled_dot_product_attention falls back to the memory-hungry math path and
+  # a 12 GB card OOMs past ~8 frames. 8/4 is the P100 maximum with all three
+  # cards idle (the 2026-09-28 run had to pin 4/2 because a co-tenant job held
+  # ~7 GiB per card). Raise to 200/40 on an A100/H100 and re-run the ablation.
+  window: 8
+  overlap: 4
+  checkpoint: VGGT-Omega-1B-416-Reproduction
+  use_depth_confidence: true
+
+stitch:
+  pixel_stride: 8
+  min_depth: 0.001
+  max_depth: null
+  depth_confidence_floor: null
+  inlier_threshold: null
+  ransac_iterations: 128
+  blend: true
+  normalize_world: true
+
+refinement:
+  camera_filter_passes: 1
+  bone_scale_max_correction: 0.035
+  bone_scale_reference: median
+  wrist_depth_lambda: 0.2
+  wrist_depth_max_change: null
+
+evaluation:
+  dataset: hot3d
+  chunk_seconds: 1.0
+  strict_artefacts: true
+
+visualization:
+  enabled: true
+  fps: null
+  draw_bbox: true
+  draw_confidence: true

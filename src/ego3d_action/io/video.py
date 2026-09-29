@@ -55,6 +55,42 @@ def _run(cmd: list[str], *, stage: str) -> subprocess.CompletedProcess[str]:
     return proc
 
 
+def ffmpeg_major_version(ffmpeg: str | None = None) -> int | None:
+    """Major version of the ``ffmpeg`` on ``PATH``, or ``None`` if unknown.
+
+    ffmpeg 5.1 deprecated ``-vsync`` and ffmpeg 9 removed it outright; the
+    replacement ``-fps_mode`` only exists from 5.1 onwards. Callers use this to
+    emit whichever spelling the installed binary actually accepts instead of
+    hard-coding one and breaking on the other.
+    """
+    binary = ffmpeg or shutil.which("ffmpeg")
+    if binary is None:
+        return None
+    proc = subprocess.run(
+        [binary, "-version"], capture_output=True, text=True, check=False
+    )
+    if proc.returncode != 0:
+        return None
+    # first line looks like "ffmpeg version 7.1.1 Copyright (c) ..."
+    head = (proc.stdout or "").splitlines()
+    if not head:
+        return None
+    tokens = head[0].split()
+    for token in tokens[2:]:
+        digits = token.split(".")[0]
+        if digits.isdigit():
+            return int(digits)
+    return None
+
+
+def _frame_sync_args(ffmpeg: str) -> list[str]:
+    """``-vsync 0`` / ``-fps_mode passthrough``, whichever this ffmpeg accepts."""
+    major = ffmpeg_major_version(ffmpeg)
+    if major is not None and major >= 5:
+        return ["-fps_mode", "passthrough"]
+    return ["-vsync", "0"]
+
+
 def probe_video(path: str | Path) -> VideoInfo:
     """Return :class:`VideoInfo` for ``path``.
 
@@ -183,8 +219,7 @@ def extract_frames(
             str(info.path),
             "-start_number",
             "0",
-            "-vsync",
-            "0",
+            *_frame_sync_args(ffmpeg),
             "-qscale:v",
             str(quality),
             str(target / f"%06d.{image_format}"),

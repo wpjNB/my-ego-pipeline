@@ -1,0 +1,19 @@
+# Example clip manifest for scripts/run_batch.py.
+#
+#   python scripts/run_batch.py --manifest configs/clips.example.yaml \
+#       --config configs/mock.yaml --hosts configs/hosts.local.yaml \
+#       --shards 2 --max-parallel 2 --skip-existing
+#
+# ``num_frames`` is required for any clip whose length is not already known: the
+# scheduler derives each stage's window count from it, so it cannot guess.
+# Alternatively pass ``--num-frames`` on the command line.
+clips:
+  - clip: mock01
+    video: data/mock/clip01/clip01.mp4
+    num_frames: 240
+
+  # Start a clip part-way through (resume after a failure, or skip Phase 0).
+  - clip: hot3d_ep000
+    num_frames: 600
+    from_stage: camera
+    notes: "HOT3D sample episode; frames are imported by scripts/demo_hot3d_sample.sh"

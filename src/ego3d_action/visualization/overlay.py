@@ -8,6 +8,9 @@ dependencies raise a typed error rather than degrading silently.
 from __future__ import annotations
 
 import logging
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -117,6 +120,41 @@ def _video_writer(cv2: object, path: Path, fps: float, size: tuple[int, int]) ->
     return writer
 
 
+def transcode_to_h264(path: str | Path) -> Path:
+    """Re-encode an OpenCV-written mp4 in place as H.264, when ffmpeg exists.
+
+    ``mp4v`` is MPEG-4 Part 2, which browsers and most default players refuse
+    to open. ffmpeg's libx264 (yuv420p, +faststart) plays everywhere. Best
+    effort: without ffmpeg - or when it fails - the original file is kept and
+    the skip is reported, never raised: these are debug artefacts.
+    """
+    target = Path(path)
+    binary = shutil.which("ffmpeg")
+    if binary is None or not target.is_file():
+        if binary is None:
+            logger.warning("%s: kept as mp4v (no ffmpeg on PATH, may not play in browsers)", target)
+        return target
+    tmp = target.with_name(f".{target.stem}.h264.mp4")
+    try:
+        subprocess.run(
+            [
+                binary, "-y", "-loglevel", "error", "-i", str(target),
+                "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+                "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", str(tmp),
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        detail = getattr(exc, "stderr", b"") or b""
+        logger.warning("%s: H.264 transcode skipped (%s)", target, detail.decode(errors="replace").strip())
+        tmp.unlink(missing_ok=True)
+        return target
+    tmp.replace(target)
+    return target
+
+
 def write_detection_video(
     frame_paths: Sequence[Path],
     boxes: Array,
@@ -158,6 +196,7 @@ def write_detection_video(
             )
     finally:
         writer.release()
+    transcode_to_h264(target)
     logger.info("wrote %s (%d frames)", target, len(frames))
     return target
 
@@ -198,6 +237,7 @@ def write_hand_video(
             )
     finally:
         writer.release()
+    transcode_to_h264(target)
     logger.info("wrote %s (%d frames)", target, len(frames))
     return target
 
@@ -442,5 +482,6 @@ def write_wrist_comparison_video(
                 cv2.imwrite(str(still_root / f"{index:06d}.png"), canvas)
     finally:
         writer.release()
+    transcode_to_h264(target)
     logger.info("wrote %s (%d frames)", target, len(frames))
     return target

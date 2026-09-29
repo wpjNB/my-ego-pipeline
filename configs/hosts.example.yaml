@@ -1,0 +1,77 @@
+# Host declarations for scripts/run_batch.py.
+#
+# Each host declares what it *can* run; the scheduler matches a stage's
+# requirements against these declarations and never logs into a machine to find
+# out. A wrong declaration is a configuration error at dispatch time, not an
+# out-of-memory failure hours into a run.
+#
+# Two things are deliberately not shipped between machines:
+#   * the conda environments (CUDA/torch stacks are not portable, and an env on
+#     NFS is unusably slow) - each host's ``python`` points at its own env;
+#   * the model weights (~11 GB) - keep them resident per host under
+#     ``weights_root`` and only move frames/artefacts over the network.
+
+hosts:
+  # The orchestrator machine. It can *run* only the CPU stages (preprocess,
+  # stitch, fusion, refine); GPU work is scheduled onto the workers below.
+  - name: orchestrator
+    executor: local
+    backends: []
+    python: {}
+    gpu_count: 0
+    data_root: data
+    repo_root: .
+    orchestrator_python: ["python"]
+    max_parallel: 4
+    notes: "CPU-only: stitching/fusion/refine and the batch ledger"
+
+  # WiLoR: Phase 1 detection. Frame-coupled, so it always runs whole-clip.
+  - name: gpu-wilor
+    executor: ssh
+    ssh_host: gpu-01
+    ssh_user: lab
+    backends: ["wilor"]
+    python:
+      wilor: ["conda", "run", "-n", "ego3d_wilor", "python"]
+    cuda: "12.1"
+    gpu_count: 1
+    gpu_memory_gb: 12.0
+    data_root: /srv/ego/data
+    repo_root: /srv/ego
+    orchestrator_python: ["conda", "run", "-n", "ego3d_base", "python"]
+    max_parallel: 1
+
+  # HaWoR: Phase 2 hands. 16/8 windows, sliced by --shard.
+  - name: gpu-hawor
+    executor: ssh
+    ssh_host: gpu-02
+    ssh_user: lab
+    backends: ["hawor"]
+    python:
+      hawor: ["conda", "run", "-n", "ego3d_hawor", "python"]
+    cuda: "11.7"
+    gpu_count: 1
+    gpu_memory_gb: 16.0
+    data_root: /srv/ego/data
+    repo_root: /srv/ego
+    orchestrator_python: ["conda", "run", "-n", "ego3d_base", "python"]
+    max_parallel: 2
+
+  # VGGT-Omega: Phase 3 camera. 200/40 windows are the memory hogs, so the
+  # declared VRAM is what keeps an under-provisioned host from being scheduled.
+  - name: gpu-vggt
+    executor: ssh
+    ssh_host: gpu-03
+    ssh_user: lab
+    backends: ["vggt"]
+    python:
+      vggt: ["conda", "run", "-n", "ego3d_vggt", "python"]
+    cuda: "12.4"
+    gpu_count: 1
+    gpu_memory_gb: 48.0
+    data_root: /srv/ego/data
+    repo_root: /srv/ego
+    orchestrator_python: ["conda", "run", "-n", "ego3d_base", "python"]
+    max_parallel: 1
+    extra_env:
+      OMP_NUM_THREADS: "8"

@@ -48,6 +48,10 @@ from ego3d_action.detection.wilor import (  # noqa: E402
     build_raw_detection_arrays,
 )
 from ego3d_action.io.serialization import save_npz  # noqa: E402
+from ego3d_action.runtime.checkpoints import (  # noqa: E402
+    allow_trusted_checkpoint_globals,
+)
+from ego3d_action.runtime.checkpoints import report as report_checkpoint_globals  # noqa: E402
 
 DETECTION_MODULE = "ultralytics"
 #: Where the detector may live, most specific first. ``external/detector.pt`` is
@@ -138,6 +142,8 @@ def run_model(args: argparse.Namespace, frames: list[Path]) -> dict[str, np.ndar
             f"detector.pt not found under {args.weights}; run "
             "./scripts/download_weights.sh --only wilor"
         )
+    allowed = allow_trusted_checkpoint_globals(detector_path, label="WiLoR detector")
+    report_checkpoint_globals(detector_path, allowed)
     detector = YOLO(str(detector_path))
     if args.device not in {"auto", "cpu"}:
         detector.to(args.device if args.device != "auto" else "cuda")
@@ -178,6 +184,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="detector confidence floor; keep it below the tracker's 0.75 anchor "
         "threshold so gap-recovery candidates survive",
     )
+    # Phase 1 detection is frame-coupled: the tracker recovers a same-side gap
+    # across frames, so a frame slice would see less context than a whole-clip run
+    # and could silently change the result. The flags are accepted (so the batch
+    # scheduler's contract is uniform) but anything other than "the whole clip"
+    # is rejected with a reason - never silently ignored.
+    parser.add_argument("--shard", default=None, metavar="INDEX/COUNT")
+    parser.add_argument("--window-range", default=None, metavar="A-B")
+    parser.add_argument("--frame-range", default=None, metavar="A-B")
+    parser.add_argument("--skip-existing", action="store_true")
     return parser
 
 
@@ -197,6 +212,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if available else 1
 
     try:
+        from ego3d_action.runtime.sharding import FrameRange, Shard
+
+        shard = Shard.parse(args.shard)
+        frame_range = FrameRange.parse(args.frame_range, num_frames=args.num_frames)
+        if not shard.is_whole or frame_range is not None or args.window_range:
+            raise ValueError(
+                "WiLoR detection is frame-coupled (the tracker recovers gaps across frames); "
+                "sharding it would change its output, so this runner refuses "
+                f"--shard={args.shard!r}, --window-range={args.window_range!r}, "
+                f"--frame-range={args.frame_range!r}. Shard the hand/camera window stages instead; "
+                "the detection frame slicer (plus context padding) lands in M2."
+            )
         frames = sorted(Path(args.frames).glob(f"*.{args.image_format}"))
         if not frames:
             raise FileNotFoundError(f"no *.{args.image_format} frames in {args.frames}")

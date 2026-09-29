@@ -1,6 +1,6 @@
 # Architecture
 
-Last modified: 2026-09-23 17:36 (+08:00)
+Last modified: 2026-09-26 (+08:00)
 
 ## Dataset bridge (LeRobot v3 / HOT3D)
 
@@ -96,6 +96,23 @@ stand-in used for CPU-only runs and tests).
 | 5 fusion | `fusion/trajectory.py` | `trajectory/trajectory_raw.npz` | `p_w = R_c2w p_c + t_c2w` |
 | 6 refine | `refinement/*` | `trajectory/trajectory.npz` | camera filter, bone scale, wrist depth |
 | 7 evaluate | `evaluation/*` | report | Action-MPJPE / Coverage / FPS |
+
+## Batch execution (offline)
+
+`scripts/run_batch.py` runs a clip manifest by dispatching each stage as a unit
+onto a capable host (see [`distributed.md`](distributed.md)). Phase 2 and Phase 3
+units are sliced by **window** (`--shard i/N`), which is a pure partition of the
+global schedule: the union of the shards equals the unsliced run, verified
+array-for-array in `tests/test_batch_e2e.py`. Phase 1 is deliberately *not*
+sliced (its tracker recovers gaps across frames) and refuses the flag with a
+reason. A sharded `hand`/`camera` group ends with one whole-clip join unit
+(`--blend-only` / window reuse) so the downstream stages still see the whole clip.
+
+Every unit writes a content-addressed provenance marker
+(`.provenance/<unit>.done.json`), so `--skip-existing` recomputes nothing while
+input contents and parameters are unchanged, and a failure marks its clip
+`degraded` in `batch_report.json` and `metadata.json` instead of fabricating
+output.
 
 ## Coordinate conventions
 

@@ -20,10 +20,30 @@ cd "$REPO_ROOT"
 
 run() { conda run -n "$ENV_NAME" python "$@"; }
 
+# `ffmpeg` often lives inside the conda env rather than on the login PATH
+# (and `conda run` resets PATH, so the pipeline inside cannot rely on it
+# either). Resolve it once here and export it so both this script and the
+# stages it launches see the same binary.
+if ! command -v ffmpeg >/dev/null 2>&1; then
+    for candidate in \
+        "$(conda run -n "$ENV_NAME" which ffmpeg 2>/dev/null)" \
+        "${CONDA_PREFIX:-}/bin/ffmpeg" \
+        "$(dirname "$(command -v conda)")/../envs/$ENV_NAME/bin/ffmpeg"; do
+        if [[ -n "$candidate" && -x "$candidate" ]]; then
+            export PATH="$(dirname "$candidate"):$PATH"
+            break
+        fi
+    done
+fi
+if ! command -v ffmpeg >/dev/null 2>&1; then
+    echo "error: ffmpeg not found; install it (apt install ffmpeg) or pick an env that has it" >&2
+    exit 1
+fi
+
 rm -rf "$OUT"
 mkdir -p "$OUT"
 
-echo "== synthesising a ${FRAMES}-frame clip"
+echo "== synthesising a ${FRAMES}-frame clip (ffmpeg $(ffmpeg -version | head -1 | awk '{print $3}'))"
 ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i "testsrc=size=320x240:rate=${FPS}:duration=$(awk "BEGIN{printf \"%.2f\", $FRAMES/$FPS}")" \
   -pix_fmt yuv420p "$OUT/${CLIP}.mp4"

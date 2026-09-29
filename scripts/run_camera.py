@@ -20,12 +20,20 @@ from ego3d_action.io.serialization import save_json  # noqa: E402
 from ego3d_action.cli import base_parser, build_context, fail  # noqa: E402
 from ego3d_action.errors import Ego3DActionError  # noqa: E402
 from ego3d_action.io.artefacts import clip_metadata  # noqa: E402
+from ego3d_action.runtime.sharding import (  # noqa: E402
+    add_skip_existing_argument,
+    add_window_selection_arguments,
+    describe_selection,
+    selection_from_args,
+)
 from ego3d_action.runtime.subprocess_backend import BackendInvocation  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = base_parser(__doc__ or "camera reconstruction")
     parser.add_argument("--num-frames", type=int, default=None)
+    add_window_selection_arguments(parser)
+    add_skip_existing_argument(parser)
     args = parser.parse_args(argv)
 
     try:
@@ -46,10 +54,18 @@ def main(argv: list[str] | None = None) -> int:
         resolution = int(context.config.get("camera.resolution", 416))
         checkpoint = str(context.config.require("camera.checkpoint"))
         ranges = make_windows(num_frames, window=window, overlap=overlap)
+        selection = selection_from_args(args)
+        owned = selection.select(ranges)
+        if not owned:
+            return fail(
+                f"--shard/--window-range '{selection.describe()}' selects no VGGT window "
+                f"out of {len(ranges)}"
+            )
 
         if args.dry_run:
-            print(f"would run {len(ranges)} VGGT-Omega window(s) at {resolution} px:")
-            for rng in ranges:
+            print(describe_selection(selection, len(owned), len(ranges)))
+            print(f"would run {len(owned)} VGGT-Omega window(s) at {resolution} px:")
+            for rng in owned:
                 print(f"  {rng.start:06d}_{rng.end - 1:06d}")
             return 0
 
@@ -72,6 +88,9 @@ def main(argv: list[str] | None = None) -> int:
             window=window,
             overlap=overlap,
             log_path=layout.camera_dir / "vggt_runner.log",
+            selection=selection,
+            skip_existing=args.skip_existing,
+            precision=context.config.get("backends.precision", None),
         )
         for path in paths:
             camera_window = load_camera_window(path)
@@ -82,18 +101,21 @@ def main(argv: list[str] | None = None) -> int:
                 f"NOTE: the backend used '{substituted}' instead of the requested "
                 f"'{checkpoint}' - record that in the ablation table."
             )
-        save_json(
-            layout.camera_dir / "vggt_run.json",
-            {
-                "stage": "phase3_camera",
-                "requested_checkpoint": checkpoint,
-                "substituted_checkpoint": substituted,
-                "num_windows": len(paths),
-                "resolution": resolution,
-                "runner": dict(vggt_omega.LAST_RUN),
-            },
-        )
-        print(f"camera: {len(paths)} window(s) -> {layout.camera_windows_dir}")
+        if selection.is_whole:
+            # The per-clip run record describes a whole-clip run; a shard writes
+            # its own provenance marker inside the windows directory instead.
+            save_json(
+                layout.camera_dir / "vggt_run.json",
+                {
+                    "stage": "phase3_camera",
+                    "requested_checkpoint": checkpoint,
+                    "substituted_checkpoint": substituted,
+                    "num_windows": len(paths),
+                    "resolution": resolution,
+                    "runner": dict(vggt_omega.LAST_RUN),
+                },
+            )
+        print(f"camera: {describe_selection(selection, len(paths), len(ranges))} -> {layout.camera_windows_dir}")
         return 0
     except Ego3DActionError as exc:
         return fail(str(exc))

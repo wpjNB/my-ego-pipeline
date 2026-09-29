@@ -314,6 +314,8 @@ def test_hawor_runner_prepares_frames_for_hawor(tmp_path: Path) -> None:
             str(tmp_path / "weights"),
         ]
     )
+    # ``checkout`` is optional; the runner passes it to fail early on a wrong
+    # --third-party, but the argument assembly must work without it too.
     namespace = runner.build_hawor_args(args, tmp_path / "seq", frames_dir)
     images = sorted((tmp_path / "seq" / "extracted_images").glob("*.jpg"))
     assert [path.name for path in images] == ["0000.jpg", "0001.jpg", "0002.jpg"]
@@ -334,6 +336,106 @@ def test_hawor_runner_explains_missing_weights(tmp_path: Path) -> None:
     message = str(excinfo.value)
     assert "hawor/checkpoints/hawor.ckpt" in message  # the paths it looked at
     assert "download_weights.sh" in message
+
+
+def test_hawor_runner_rejects_a_wrong_checkout(tmp_path: Path) -> None:
+    """A 4th argument (the checkout) is checked when it is supplied."""
+    runner = load_script("hawor_runner_mod4", "backends/hawor_runner.py")
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir()
+    args = runner.build_parser().parse_args(
+        ["--frames", str(frames_dir), "--out-dir", str(tmp_path / "out"), "--weights", str(tmp_path)]
+    )
+    with pytest.raises(NotADirectoryError) as excinfo:
+        runner.build_hawor_args(args, tmp_path / "seq", frames_dir, tmp_path / "no-such-checkout")
+    assert "HaWoR checkout not found" in str(excinfo.value)
+
+
+def test_gpu_runners_expose_a_precision_flag() -> None:
+    """fp16 is what makes the 1B/3 GB checkpoints fit on a shared 12 GB GPU."""
+    hawor = load_script("hawor_runner_mod5", "backends/hawor_runner.py")
+    vggt = load_script("vggt_runner_mod5", "backends/vggt_runner.py")
+    for runner in (hawor, vggt):
+        parser = runner.build_parser()
+        assert parser.parse_args([]).precision == "auto"
+        assert parser.parse_args(["--precision", "fp16"]).precision == "fp16"
+        with pytest.raises(SystemExit):  # an unknown precision is rejected, not ignored
+            parser.parse_args(["--precision", "bf16"])
+
+
+def test_hawor_runner_exposes_a_crop_size_knob() -> None:
+    """192 px is the shared-GPU escape hatch for HaWoR's activation memory."""
+    hawor = load_script("hawor_runner_mod6", "backends/hawor_runner.py")
+    parser = hawor.build_parser()
+    assert parser.parse_args([]).crop_size == 256  # upstream default
+    assert parser.parse_args(["--crop-size", "192"]).crop_size == 192
+
+
+def test_hawor_loader_forces_cpu_restore(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HaWoR's load_from_checkpoint has no map_location -> 4.3 GB lands on the GPU.
+
+    ``torch`` is not installed in this environment, so the test drives the loader
+    with a stub module: what matters is that ``map_location="cpu"`` is injected
+    for the duration of the load and that an explicit caller value is respected.
+    """
+    import sys
+    import types
+
+    runner = load_script("hawor_runner_mod7", "backends/hawor_runner.py")
+    calls: list[dict[str, object]] = []
+
+    class _Model:
+        def __init__(self) -> None:
+            self.inference = lambda *a, **k: "inference"
+
+        def half(self) -> "_Model":
+            calls.append({"half": True})
+            return self
+
+    def fake_load(*args: object, **kwargs: object) -> object:
+        calls.append(dict(kwargs))
+        return {"loaded": True}
+
+    fake_torch = types.SimpleNamespace(
+        load=fake_load,
+        float16="float16",
+        autocast=lambda *a, **k: __import__("contextlib").nullcontext(),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    def upstream_loader(path: str) -> tuple[object, object]:
+        fake_torch.load(path, weights_only=True)  # what Lightning ends up doing
+        return _Model(), {"cfg": True}
+
+    patched = runner._patched_loader(upstream_loader, half=True)
+    model, cfg = patched("weights/hawor.ckpt")
+    assert calls[0]["map_location"] == "cpu"  # forced
+    assert calls[0]["weights_only"] is True  # caller's other kwargs survive
+    assert {"half": True} in calls  # fp16 requested
+    assert cfg == {"cfg": True}
+    assert model.inference("x") == "inference"
+    # The global torch.load is restored: no leaking patch.
+    assert fake_torch.load is fake_load
+
+    # Lightning passes its own ``_default_map_location`` callable (which would
+    # pick CUDA); that must be steered to CPU too.
+    def lightning_loader(path: str) -> tuple[object, object]:
+        fake_torch.load(path, map_location=lambda storage, loc: storage, weights_only=False)
+        return _Model(), {}
+
+    calls.clear()
+    runner._patched_loader(lightning_loader, half=False)("weights/hawor.ckpt")
+    assert calls[0]["map_location"] == "cpu"
+    assert calls[0]["weights_only"] is False
+
+    def explicit_loader(path: str) -> tuple[object, object]:
+        fake_torch.load(path, map_location="cuda:1")
+        return _Model(), {}
+
+    calls.clear()
+    runner._patched_loader(explicit_loader, half=False)("weights/hawor.ckpt")
+    assert calls[0]["map_location"] == "cuda:1"  # explicit wins
+    assert {"half": True} not in calls  # fp32 path must not halve the model
 
 
 # ------------------------------------------------------------------ VGGT
@@ -367,3 +469,156 @@ def test_vggt_runner_refuses_undecodable_output() -> None:
     runner = load_script("vggt_runner_mod", "backends/vggt_runner.py")
     with pytest.raises(NotImplementedError, match="Available"):
         runner.decode_predictions({"nonsense": np.zeros(3)}, image_size=(4, 4), resolution=416)
+
+
+def test_synthesised_camera_trajectory_is_float32(tmp_path: Path) -> None:
+    """HaWoR feeds this into einsum next to float32 model outputs.
+
+    Writing float64 raised "expected scalar type Double but found Float" inside
+    ``cam2world_convert``; DROID-SLAM's own npz is float32, which is why the
+    synthesised replacement has to match.
+    """
+    import argparse
+
+    import numpy as np
+
+    runner = load_script("hawor_runner_mod8", "backends/hawor_runner.py")
+    args = argparse.Namespace(camera_windows=None, focal=None)
+    path = runner.write_camera_trajectory(args, tmp_path / "seq", 0, 4)
+    data = np.load(path)
+    assert data["traj"].dtype == np.float32
+    assert data["img_center"].dtype == np.float32
+    assert float(data["scale"]) == 1.0
+    assert data["traj"].shape == (4, 7)
+
+
+def test_hawor_to_camera_space_uses_the_contract_layout() -> None:
+    """Frame-major (T, hand, joint, xyz), NaN wherever either validity source fails."""
+    import numpy as np
+
+    runner = load_script("hawor_runner_mod9", "backends/hawor_runner.py")
+    total = 3
+    r_w2c = np.broadcast_to(np.eye(3), (total, 3, 3)).copy()
+    t_w2c = np.tile(np.array([0.0, 0.0, -1.0]), (total, 1))
+    landmarks = np.zeros((total, 2, 21, 3))
+    landmarks[..., 2] = 2.0  # everything sits 2 m down +z
+    valid = np.ones((total, 2), dtype=bool)
+    valid[1, 0] = False
+    pred_valid = np.ones((2, total))  # (hand, frame), as the infiller returns it
+    pred_valid[1, 2] = 0.0
+    confidence = np.full((total, 2), 0.9)
+
+    result = runner.to_camera_space(
+        r_w2c, t_w2c, landmarks, valid=valid, pred_valid=pred_valid, confidence=confidence
+    )
+    joints = result["joints_camera"]
+    assert joints.shape == (total, 2, 21, 3)
+    assert np.allclose(joints[0, 0], [0.0, 0.0, 1.0])  # identity pose, z-1
+    assert np.isnan(joints[1, 0]).all()  # tracker missed it
+    assert np.isnan(joints[2, 1]).all()  # infiller did not trust it
+    assert result["valid"].tolist() == [[True, True], [False, True], [True, False]]
+    assert result["confidence"][1, 0] == 0.0
+    assert result["confidence"][0, 0] == 0.9
+
+    with pytest.raises(ValueError, match="landmarks must be"):
+        runner.to_camera_space(
+            r_w2c, t_w2c, landmarks.transpose(1, 0, 2, 3), valid=valid,
+            pred_valid=pred_valid, confidence=confidence,
+        )
+
+
+def test_hawor_absolutizes_paths_before_chdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """HaWoR chdirs into its checkout; relative paths must not follow it there.
+
+    ``--camera-windows data/<clip>/camera/windows`` resolved to
+    ``third_party/HaWoR/data/...`` after the chdir and reported "holds no *.npz"
+    while the directory had 39 windows.
+    """
+    import argparse
+
+    runner = load_script("hawor_runner_mod10", "backends/hawor_runner.py")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data" / "clip" / "camera" / "windows").mkdir(parents=True)
+    args = argparse.Namespace(
+        frames="data/clip/frames",
+        out_dir="data/clip/hand/windows",
+        detection="data/clip/detection/detection.npz",
+        camera_windows="data/clip/camera/windows",
+    )
+    runner.absolutize_paths(args)
+    for value in (args.frames, args.out_dir, args.detection, args.camera_windows):
+        assert Path(value).is_absolute()
+        assert Path(value).is_relative_to(tmp_path)
+    # Empty/None values are left alone rather than turned into the cwd.
+    runner.absolutize_paths(argparse.Namespace(camera_windows=None, frames=""))
+    assert True
+
+
+def test_resolve_focal_prefers_real_intrinsics_over_the_600px_default(
+    tmp_path: Path,
+) -> None:
+    """HaWoR's silent 600 px default is what put hands 2.2x too deep on HOT3D."""
+    import numpy as np
+
+    from ego3d_action.io.artefacts import ClipLayout
+
+    runner = load_script("run_hand_mod_focal", "scripts/run_hand.py")
+    layout = ClipLayout(data_root=tmp_path, clip="clip")
+    layout.ensure_dirs()
+    (layout.metadata_path).write_text('{"width": 512, "height": 512}', encoding="utf-8")
+
+    class _Config:
+        def __init__(self, values: dict[str, object]) -> None:
+            self.values = values
+
+        def get(self, key: str, default: object = None) -> object:
+            return self.values.get(key, default)
+
+    # 1. nothing available -> the caller must warn rather than guess
+    focal, source = runner.resolve_focal(layout, _Config({}))
+    assert focal is None and source == "unavailable"
+
+    # 2. a reference trajectory answers when the camera stage has not run yet
+    intrinsics = np.broadcast_to(
+        np.array([[221.14, 0.0, 255.8], [0.0, 221.14, 255.8], [0.0, 0.0, 1.0]]), (3, 3, 3)
+    ).copy()
+    np.savez(layout.trajectory_dir / "ground_truth.npz", camera_K=intrinsics)
+    focal, source = runner.resolve_focal(layout, _Config({}))
+    assert abs(focal - 221.14) < 1e-6 and source == "reference camera_K"
+
+    # 3. Phase 3's windows win, rescaled from the depth grid to the frame size
+    np.savez(
+        layout.window_path(0, 4),
+        intrinsics=np.broadcast_to(
+            np.array([[110.57, 0.0, 127.9], [0.0, 110.57, 127.9], [0.0, 0.0, 1.0]]), (4, 3, 3)
+        ).copy(),
+        depth=np.zeros((4, 256, 256), dtype=np.float32),
+    )
+    focal, source = runner.resolve_focal(layout, _Config({}))
+    assert abs(focal - 221.14) < 0.05 and source == "Phase 3 camera windows"
+
+    # 4. an explicit config value wins over everything
+    focal, source = runner.resolve_focal(layout, _Config({"hand.focal": 300.0}))
+    assert focal == 300.0 and source == "config hand.focal"
+
+
+def test_hawor_drops_cached_tracks_when_the_focal_changes(tmp_path: Path) -> None:
+    """A cached track computed at the default 600 px must not survive a real focal."""
+    runner = load_script("hawor_runner_mod11", "backends/hawor_runner.py")
+    seq = tmp_path / "seq"
+    (seq / "tracks_0_450").mkdir(parents=True)
+    (seq / "tracks_0_450" / "frame_chunks_all.npy").write_bytes(b"stale")
+
+    runner.invalidate_stale_hand_cache(seq, 221.14)
+    assert (seq / "est_focal.txt").read_text() == "221.14"
+    assert (seq / "tracks_0_450").is_dir()  # nothing to compare against -> keep
+
+    runner.invalidate_stale_hand_cache(seq, 600.0)
+    assert not (seq / "tracks_0_450").exists()  # focal changed -> drop
+
+    # Same focal again: no further deletion, and a missing focal changes nothing.
+    (seq / "tracks_1_2").mkdir()
+    runner.invalidate_stale_hand_cache(seq, 600.0)
+    assert (seq / "tracks_1_2").is_dir()
+    runner.invalidate_stale_hand_cache(seq, None)
+    assert (seq / "tracks_1_2").is_dir()

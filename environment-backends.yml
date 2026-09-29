@@ -1,0 +1,69 @@
+# The unified backend environment (`ego3d`).
+#
+# One environment for WiLoR + HaWoR + VGGT-Omega and the orchestrator, instead
+# of the three per-backend envs the docs originally assumed.
+#
+# Why one env can work here:
+#   * VGGT-Omega wants torch>=2.6 / torchvision>=0.21 / numpy<2  -> 2.8+cu126 OK
+#   * WiLoR wants exactly smplx==0.1.28, opencv, ultralytics, timm, einops
+#   * HaWoR pins torch 1.13 only because of DROID-SLAM + Metric3D, which this
+#     project replaces with VGGT-Omega; its own model code is stock PyTorch
+#   * python 3.10 satisfies all three (HaWoR/WiLoR wanted 3.10, VGGT 3.11)
+#
+# Two things are deliberately NOT installed, both because this machine has no
+# nvcc/gcc so no CUDA extension can be built:
+#   * lietorch / DROID-SLAM  -> see the note in `backends/hawor_runner.py`
+#   * pytorch3d              -> rendering only
+#
+# Created with:
+#   conda create -n ego3d -c conda-forge --clone mint-inference -y   # torch 2.8.0+cu126
+#   pip install -r environment-backends.txt
+name: ego3d
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - ffmpeg
+  # the torch stack comes from the clone; pin it here for a from-scratch build:
+  #   pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu126
+  - pip
+  - pip:
+      # --- shared numerics / IO -------------------------------------------
+      - numpy<2
+      - scipy
+      - opencv-python
+      - pillow
+      - pyyaml
+      - tqdm
+      - pandas
+      - pyarrow
+      - scikit-image
+      - joblib
+      - natsort
+      - einops
+      - safetensors
+      - huggingface_hub
+      # --- hand models (WiLoR + HaWoR share these) ------------------------
+      - smplx==0.1.28
+      - timm
+      - yacs
+      - roma
+      - chumpy @ git+https://github.com/mattloper/chumpy
+      # --- WiLoR detector -------------------------------------------------
+      - ultralytics==8.1.34
+      # --- HaWoR -----------------------------------------------------------
+      - pytorch-lightning
+      - hydra-core
+      - hydra-colorlog
+      - hydra-submitit-launcher
+      - pyrootutils
+      - rich
+      - webdataset
+      - evo
+      - pycocotools
+      - xtcocotools
+      - mmengine==0.10.4
+      - dill
+      - loguru
+      - easydict
+      - plfile

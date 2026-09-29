@@ -1,0 +1,24 @@
+# Single-machine host file: everything runs locally in this interpreter.
+#
+#   python scripts/run_batch.py --manifest configs/clips.example.yaml \
+#       --config configs/mock.yaml --hosts configs/hosts.local.yaml --shards 2
+#
+# On a GPU box, replace ``python`` with the interpreter that has both
+# ``ego3d_action`` and the backend envs available (see doc_auto/environments.md),
+# or split this into several ``executor: ssh`` hosts as in hosts.example.yaml.
+hosts:
+  - name: local
+    executor: local
+    backends: ["wilor", "hawor", "vggt"]
+    python:
+      wilor: ["python"]
+      hawor: ["python"]
+      vggt: ["python"]
+    cuda: "cuda"
+    gpu_count: 1
+    gpu_memory_gb: 24.0
+    data_root: data
+    repo_root: .
+    orchestrator_python: ["python"]
+    max_parallel: 2
+    notes: "single machine; the conda envs must be activatable from this shell"

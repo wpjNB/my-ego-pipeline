@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
+import subprocess
 from dataclasses import dataclass
 
 from ..errors import BackendNotAvailableError, ConfigError
@@ -46,18 +48,57 @@ def resolve_device(requested: str = "auto") -> str:
 
 
 def cuda_available() -> bool:
-    """True when torch is importable and reports a visible CUDA device."""
+    """True when *something* can see a CUDA device.
+
+    The orchestrator deliberately has no torch (the model backends bring their
+    own environments), so an ``ImportError`` cannot mean "CPU-only" - it means
+    "ask the driver instead". Without this fallback the orchestrator resolved
+    ``device: auto`` to ``cpu`` on the GPU server and handed ``--device cpu`` to
+    backends that then refused to run.
+    """
     if os.environ.get("EGO3D_FORCE_CPU", "").strip() in {"1", "true", "yes"}:
         return False
     try:
         import torch  # noqa: PLC0415 - optional heavy dependency
     except ImportError:
-        logger.debug("torch is not installed; treating the machine as CPU-only")
-        return False
+        visible = driver_gpu_names()
+        logger.debug(
+            "torch is not installed; the driver reports %d GPU(s)", len(visible)
+        )
+        return bool(visible)
     available = bool(torch.cuda.is_available())
     if not available:
         logger.debug("torch %s present but no CUDA device is visible", torch.__version__)
     return available
+
+
+def driver_gpu_names() -> list[str]:
+    """GPU names reported by ``nvidia-smi -L``; ``[]`` when there is no driver.
+
+    Used only to answer "is there a GPU at all?" in environments without torch.
+    Actual device selection stays with torch inside the backend.
+    """
+    if shutil.which("nvidia-smi") is None:
+        return []
+    try:
+        completed = subprocess.run(
+            ["nvidia-smi", "-L"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover - driver oddities
+        logger.debug("nvidia-smi could not be run: %s", exc)
+        return []
+    if completed.returncode != 0:
+        logger.debug("nvidia-smi -L exited with %d", completed.returncode)
+        return []
+    return [
+        line.split(":", 1)[1].strip()
+        for line in completed.stdout.splitlines()
+        if line.startswith("GPU ") and ":" in line
+    ]
 
 
 def torch_device(requested: str = "auto") -> "object":

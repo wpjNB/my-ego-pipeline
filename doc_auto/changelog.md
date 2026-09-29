@@ -1,5 +1,201 @@
 # Changelog
 
+## 2026-09-29 20:50 (+08:00) - focal fix validated on MANO ground truth; first scored real run
+
+`data/hot3d` turned out to carry the same partial-sync damage as the meta
+files: in `hot3d_ep000` 371 of 450 frames were 0 bytes and every artefact npz
+(`ground_truth`, `hand_camera`, `trajectory*`) was a 262 144-byte truncated
+stub. `hot3d_ep000` was re-imported from `data/samples/lerobot_v3`
+(`scripts/import_lerobot.py --overwrite`; 450 frames + MANO 21-joint reference,
+coverage left 96.4 % / right 100 %). `hot3d_ep003` is damaged the same way and
+still needs a re-import; `hot3d_real000`, `real01`, `real24` are intact.
+
+The full real chain then ran on `hot3d_ep000` on this host (aius-01, 3x P100):
+WiLoR detection 24 s -> 112 VGGT windows of 8 frames (`camera.window` raised
+4/2 -> 8/4 now that the cards are idle; 8 is still the sm_60 ceiling - no
+flash attention) -> Sim(3) stitch with 81-98 % inliers -> HaWoR 16/8 in 2 min
+(`camera_source: vggt`, focal 227.48 px) -> fusion -> refine. Scored against
+the MANO reference:
+
+| Hand focal | Action MPJPE | Wrist | Depth |
+| --- | --- | --- | --- |
+| 600 px (HaWoR's silent default) | 664.72 mm | 528.46 mm | 585.14 mm |
+| 227.48 px (resolved from Phase 3 windows) | **183.08 mm** | **57.35 mm** | **147.83 mm** |
+
+Identical camera trajectory in both rows, so the 3.6x drop is the focal length
+alone. The refine stages move aggregate MPJPE by < 1 mm on real data (wrist
+58.35 -> 57.35 mm still comes from the wrist-depth stage); full tables and the
+caveats (left-hand detection 22.7 %, window-8 VGGT) are in
+`doc_auto/ablation.md`, raw reports in `outputs/hot3d_ep000_{ablation,focal_fix,focal600}.json`.
+
+One more defect surfaced while producing the 600 px control row, in code this
+changeset had already staged: `hawor_runner.run_model` wrote our tracking into
+`tracks_0_450/` *before* `invalidate_stale_hand_cache` ran, so a re-run with a
+changed focal - the exact scenario the invalidation exists for - deleted the
+tracks it had just written and HaWoR found no input. The invalidation now runs
+first. The host deviations live in a new `configs/hot3d_p100.yaml` (shared
+`ego3d` env, fp16 for VGGT, 8/4 windows) while `configs/hot3d.yaml` is
+restored to the hardware-independent reference (200/40, per-backend envs) that
+`test_shipped_configs_are_valid` pins; the test now covers both files.
+
+Test suite: **392 passed**.
+
+Visual refresh for the real run: `02_hawor.mp4` re-blended from the restored
+227 px windows (the 600 px control run had overwritten it), `gt_vs_pred.mp4`
++ 6 stills re-rendered against the MANO reference (the old file was another
+0-byte stub), and the VGGT reconstruction set (point cloud turntable, depth
+overlay) produced from the real 112 windows. `render_vggt_reconstruction.py`
+needed a NumPy-2 fix (`ndarray.ptp()` -> `np.ptp`). The script's "camera
+height 6 cm -> SUSPICIOUS depth scale" warning is a false alarm here: it
+assumes a floor-anchored world, but the stitched world is normalized to
+World-0 (frame 0's camera at the origin), so the camera sits at ~0 by
+construction.
+
+Every debug video used to come out as OpenCV's `mp4v` (MPEG-4 Part 2), which
+browsers and most default players refuse to open. `overlay.py` now gains
+`transcode_to_h264`: after OpenCV releases its writer, ffmpeg re-encodes the
+file in place to H.264/yuv420p/+faststart (best effort - without ffmpeg the
+mp4v file is kept and the skip logged, never raised). All writer call sites
+(the two overlay videos, the wrist comparison - missed on the first pass,
+caught because ep003's fresh `gt_vs_pred.mp4` still probed as mpeg4 - and both
+VGGT renders) go through it, and the five existing hot3d_ep000 videos were
+transcoded in place (frame counts verified).
+
+`hot3d_ep003` - the clip whose 0-byte `gt_vs_pred.mp4` prompted all this - was
+then rebuilt for real: re-imported with a MANO reference and run through the
+full chain (focal 232.82 px, hand coverage 67.2 %): **Action-MPJPE 187.35 mm**
+(wrist 81.36 mm), within 4.3 mm of ep000 despite a very different detection
+profile (left 68.2 % / right 66.2 % vs 22.7 % / 86.9 %) - the ~180 mm level is
+the pipeline's operating point at window 8, not one episode's fluke. To watch
+the results without fighting players, `outputs/visual_gallery.html` embeds
+both clips' videos and stills, served at
+`http://localhost:8899/outputs/visual_gallery.html` by
+`python -m http.server 8899 --bind 127.0.0.1` on aius-01 (VS Code Remote-SSH
+forwards the port automatically).
+
+Also ran the detection-coverage trade-off on ep000 (results in
+`doc_auto/ablation.md`, raw `outputs/hot3d_ep000_det_ablation.json`):
+`min_confidence` 0.75 -> 0.5 + `max_gap` 4 -> 8 lifts hand coverage
+54.8 % -> 78.1 % (left detection 22.7 % -> 58.7 %) and slightly improves the
+wrist error, while MPJPE stays ~flat (183.1 -> 185.3 mm - the recovered frames
+are the hard ones). The shipped configs keep the strict baseline; flipping the
+two knobs is a runtime `--set`. The error budget at the operating point is
+camera/depth dominated (80-118 + 83-153 mm), not hand-dominated (wrist
+57-81 mm) - which is what makes the VGGT window size the real lever.
+
+## 2026-09-28 12:50 (+08:00) - first real end-to-end run on the aius server
+
+`aius` (3x Tesla P100-12GB, driver 580) now runs the pipeline with the **real**
+WiLoR + HaWoR + VGGT-Omega backends. Getting there turned up seven genuine
+defects, none of which the mock path could see:
+
+1. **`device: auto` resolved to CPU on a GPU host.** The orchestrator has no
+   torch by design, so `cuda_available()` said `False` and every backend received
+   `--device cpu` (VGGT then refuses outright). `runtime/device.py` now falls back
+   to `nvidia-smi -L` when torch is missing; `EGO3D_FORCE_CPU=1` still wins.
+2. **HaWoR's checkpoint was being restored onto the GPU.** `HAWOR.load_from_
+   checkpoint` hands Lightning's own `_default_map_location` to `torch.load`,
+   which picks CUDA: the 3.35 GB state dict was materialised on the card *and*
+   then copied again by Lightning's `model.to(device)`. That - not inference,
+   crops, window size or dtype - is why every attempt OOMed at the identical
+   4.32 GB. The runner now steers `map_location` to CPU (an explicit
+   `str`/`torch.device` from a caller still wins).
+3. **The renderer stub returned the wrong mask rank.** PyTorch3D is absent (no
+   nvcc/gcc), so a stub stands in for `lib.vis.renderer`; it returned a
+   `(1, H, W)` mask while HaWoR accumulates `model_masks[frame] += mask` into a
+   `(T, H, W)` array - "non-broadcastable output operand".
+4. **The synthesised SLAM npz was float64.** `hawor_infiller` feeds it straight
+   into `torch.einsum` beside float32 model outputs ("expected scalar type Double
+   but found Float"). DROID-SLAM's own file is float32; ours is now too.
+5. **The landmarks array was hand-major.** `(2, T, 21, 3)` cannot reach a
+   `"tji,thnj->thni"` einsum, and the validity mask is frame-major. The conversion
+   is now a tested helper (`backends/hawor_runner.py::to_camera_space`) that
+   validates shapes and keeps NaN wherever either validity source fails.
+6. **Relative paths followed the chdir.** HaWoR must run from inside its checkout,
+   so `--camera-windows data/<clip>/camera/windows` resolved into the checkout and
+   reported "holds no *.npz" while 39 windows sat there. `absolutize_paths()`
+   resolves frames/out-dir/detection/camera-windows up front.
+7. **One precision knob for two very different backends.** VGGT-Omega halves its
+   aggregator (2.87 GB resident instead of 4.3), which is what fits next to
+   another job on a 12 GB card; HaWoR does not survive fp16 (see 4). `unified.yaml`
+   now separates `backends.precision` (VGGT) from `backends.hand_precision`
+   (HaWoR), and both runners gained `--precision` and `--crop-size`.
+
+Also: runner failures now print a full traceback (the one-line JSON summary is
+unchanged); the server's `data/samples/lerobot_v3/meta/{info.json,tasks.parquet}`
+were 0 bytes from a partial copy and had to be re-synced; and every command needs
+the env's `bin/` on PATH or `ffprobe` is reported missing.
+
+What the real run produced on `real01` (79 frames, 512x512, 30 fps):
+
+| Stage | Result |
+| --- | --- |
+| Phase 1 WiLoR | real detector, coverage left 99 %+ / right 93 %+ |
+| Phase 3 VGGT-Omega | 39 windows (4-frame schedule), fp16 aggregator on a shared P100 |
+| Phase 4 Sim(3) stitch | 38 alignments, scale 1.005-1.027/pair, 86-98 % inliers, 9-42 mm rmse, < 2 deg |
+| Phase 2 HaWoR | camera-space hands, 62.7 % coverage, driven by the VGGT trajectory (no DROID-SLAM) |
+| Phase 5/6 fusion + refine | left 31.6 % / right 93.7 % valid; bone-scale 18.8 -> 16.0 %; wrist depth mean 9.2 mm |
+
+The reference windows (camera 200/40, hands 16/8) still need an idle GPU: with
+another job holding ~7 GB of each P100 only ~4.7 GB is free, which is why
+`unified.yaml` pins 4/2 and reports that degradation instead of hiding it.
+
+Test suite: **390 passed**.
+
+## 2026-09-26 22:35 (+08:00) - M1: window sharding, idempotent re-runs, batch dispatch
+
+Added the scheduler-agnostic half of the distributed pipeline (design in
+[`distributed.md`](distributed.md)). No stage's *output* changed; what changed is
+that a stage can now be run in slices, re-run cheaply, and dispatched to a host
+that declares it can run it.
+
+New modules:
+
+* `runtime/sharding.py` - `--shard i/N` and `--window-range a-b` as a pure
+  partition of the **global** window schedule (interleaved ownership, so the
+  partition is order-independent). `FrameRange` is the tested seam for the M2
+  detection slicer.
+* `runtime/provenance.py` - `params_hash` over parameters + input **contents** +
+  the shard selection, and `.provenance/<unit>.done.json`. Hashing never looks at
+  mtime, because mtimes are not comparable across machines.
+* `runtime/executor.py` - declared `HostCapabilities` (backends, CUDA, VRAM,
+  paths, concurrency) matched without logging into a worker, plus `local` and
+  `ssh` executors. `slurm`/`k8s` extend `build_executor` without touching the
+  scheduler.
+* `runtime/batch.py` + `scripts/run_batch.py` - clip manifest -> unit plan ->
+  parallel dispatch, bounded retries, degraded marking, and a ledger.
+
+Changed:
+
+* `scripts/run_hand.py` and `scripts/run_camera.py` accept `--shard`,
+  `--window-range`, `--skip-existing`; `run_hand.py` also gained `--blend-only`
+  (the whole-clip join step after sharded hand units).
+* `backends/{vggt,hawor}_runner.py` implement the same flags (validated against
+  the schedule; a selection that matches nothing is an error, never a silent
+  no-op). `backends/wilor_runner.py` **rejects** frame-level slicing with the
+  reason, because the tracker's gap recovery is frame-coupled.
+* `backends/_shard_cli.py` is the shared runner-side contract, so mock and real
+  runners agree on what a shard is and write the same markers.
+* `configs/{clips.example,hosts.example,hosts.local}.yaml` and
+  `make batch` / `make dry-batch`.
+
+Proof, all on CPU with the mock backend:
+
+* `tests/test_batch_e2e.py` - a 2-shard run is **array-for-array identical** to an
+  unsliced run, the blend assembled from the shards equals the whole-clip blend,
+  and a second `--skip-existing` run performs zero computation.
+* `tests/test_batch.py` - a failing unit is retried `retries + 1` times, marks its
+  clip `degraded` in both the ledger and `metadata.json`, skips the clip's later
+  stages, and writes **no** artefact or marker.
+* `tests/test_sharding.py`, `tests/test_provenance.py` - partition/union/
+  no-duplicate over both real schedules; stale, corrupt and incomplete markers
+  never skip.
+
+Also repaired in the working tree while establishing a baseline: the `100755`
+bits on 26 tracked `scripts/*.py|sh` and `backends/*_runner.py` files had been
+lost (git recorded `100755`, the checkout was `100644`), which made 26 tests fail
+with `PermissionError`. `chmod +x` restored them; no file content changed.
+
 ## 2026-09-24 22:30 (+08:00) - the "broken hands" figure was a bad render, not the reference
 
 A debug still (`outputs/real_mano_frame150.png`, produced by a throw-away snippet
