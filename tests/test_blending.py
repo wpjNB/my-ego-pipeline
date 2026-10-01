@@ -12,6 +12,7 @@ from ego3d_action.hand.temporal_blend import (
     blend_hand_windows,
     overlap_alpha,
     overlap_alpha_ramp,
+    smooth_hand_trajectory,
 )
 
 
@@ -131,3 +132,63 @@ def test_overlap_alpha_validates_input() -> None:
 def test_window_shape_validation() -> None:
     with pytest.raises(StageIOError):
         HandWindow(start=0, joints_camera=np.zeros((3, 2, 20, 3)), valid=np.ones((3, 2), dtype=bool))
+
+
+def test_vertices_blend_like_joints() -> None:
+    """Mesh vertices follow the same first-take-then-lerp rule as the joints."""
+    verts_a = np.zeros((4, 2, 3, 3))
+    verts_a[..., 0] = 1.0
+    verts_b = np.zeros((4, 2, 3, 3))
+    verts_b[..., 0] = 3.0  # window b starts at frame 1, overlapping 3 frames
+    valid = np.ones((4, 2), dtype=bool)
+    window_a = HandWindow(
+        start=0, joints_camera=np.zeros((4, 2, 21, 3)), valid=valid,
+        confidence=np.full((4, 2), 0.9), vertices_camera=verts_a,
+    )
+    window_b = HandWindow(
+        start=1, joints_camera=np.zeros((4, 2, 21, 3)), valid=valid,
+        confidence=np.full((4, 2), 0.9), vertices_camera=verts_b,
+    )
+    result = blend_hand_windows([window_a, window_b])
+    assert result.vertices_camera is not None
+    assert result.vertices_camera.shape == (5, 2, 3, 3)
+    assert np.allclose(result.vertices_camera[0, 0, :, 0], 1.0)  # only a covers it
+    assert np.allclose(result.vertices_camera[2, 0, :, 0], 2.0)  # ramp midpoint (a=0.5)
+    assert np.allclose(result.vertices_camera[3, 0, :, 0], 3.0)  # ramp end (a=1)
+    assert np.allclose(result.vertices_camera[4, 0, :, 0], 3.0)  # only b covers it
+
+    # A window without vertices just does not contribute mesh geometry.
+    mixed = blend_hand_windows([
+        HandWindow(start=0, joints_camera=np.zeros((4, 2, 21, 3)), valid=valid),
+        window_b,
+    ])
+    assert mixed.vertices_camera is not None
+    assert np.allclose(mixed.vertices_camera[0, 0], 0.0)  # no geometry before b starts
+    assert np.allclose(mixed.vertices_camera[1:, 0, :, 0], 3.0)
+
+    with pytest.raises(StageIOError):
+        HandWindow(
+            start=0, joints_camera=np.zeros((3, 2, 21, 3)), valid=np.ones((3, 2), dtype=bool),
+            vertices_camera=np.zeros((3, 2, 3)),
+        )
+
+
+def test_smoothing_damps_high_frequency_noise_without_crossing_gaps() -> None:
+    """One binomial pass halves a single-frame spike; gaps and edges stay put."""
+    joints = np.zeros((7, 2, 21, 3))
+    joints[:, 0, 0, 2] = [0, 1, 2, 30, 4, 5, 6]  # a 30 mm spike on the left wrist
+    valid = np.ones((7, 2), dtype=bool)
+    valid[5:, 0] = False  # a gap after frame 4 - the spike must not smear into it
+    smoothed, verts = smooth_hand_trajectory(joints.copy(), valid, passes=1)
+    assert verts is None
+    z = smoothed[:, 0, 0, 2]
+    assert np.isclose(z[3], 16.5)  # spike damped: 0.25*2 + 0.5*30 + 0.25*4
+    assert np.isclose(z[2], 8.75)  # the neighbour legitimately picks up spike energy
+    assert z[4] == 4.0  # last frame of the run keeps its value (edge)
+    assert z[0] == 0.0 and z[1] == 1.0  # run head keeps its edge values
+
+    # vertices ride along with the same taps
+    verts_in = np.zeros((7, 2, 4, 3))
+    verts_in[:, 0, :, 2] = joints[:, 0, 0, 2][:, None]
+    sm_j, sm_v = smooth_hand_trajectory(joints.copy(), valid, vertices_camera=verts_in, passes=1)
+    assert np.isclose(sm_v[3, 0, :, 2], sm_j[3, 0, 0, 2]).all()

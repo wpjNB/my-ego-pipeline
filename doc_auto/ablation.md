@@ -1,6 +1,6 @@
 # Ablation table
 
-Last modified: 2026-09-29 20:45 (+08:00)
+Last modified: 2026-09-29 23:45 (+08:00)
 
 ## Mock backend (CPU, 300 frames, deterministic - plumbing validation only)
 
@@ -13,9 +13,14 @@ against `backends/mock_backend.py truth`.
 | raw (no post-processing) | 24.6393 mm | 90.67 % | 22.92 mm |
 | + camera filter (3-frame binomial) + wrist depth | 26.7479 mm | 90.67 % | 16.06 mm |
 | + camera filter + bone scale (<= 3.5 %) | 23.9437 mm | 90.67 % | 22.92 mm |
-| **Final** (all three) | 25.8964 mm | 90.67 % | 16.06 mm |
+| + gap fill (P2, `max_gap` 12) on the three stages | 25.8118 mm | 92.00 % | 16.03 mm |
+| **Final** (camera filter + wrist depth + bone scale + gap fill) | **25.8118 mm** | **92.00 %** | 16.03 mm |
 
-Pipeline wall time 5.65 s for 300 frames -> 53.10 FPS on CPU.
+Pipeline wall time 17.92 s for 300 frames -> 16.74 FPS on CPU (an earlier
+quiet-machine run measured 5.65 s / 53.10 FPS; the stage composition is what
+matters here). Gap fill is the only stage that moves coverage: the planted
+10-frame right-hand hole sits on smooth motion, so the linear blend beats the
+mock's per-frame depth noise and both columns improve.
 
 ### How to read this
 
@@ -85,25 +90,71 @@ all videos at `outputs/visual_gallery.html` (served by
 
 ### Detection coverage vs accuracy (ep000, 2026-09-29)
 
-Relaxing the tracker (`detection.min_confidence` 0.75 -> 0.5,
-`detection.max_gap` 4 -> 8; WiLoR itself still detects at conf 0.1) buys a lot
-of continuity and costs nothing meaningful in accuracy:
+Three stacked changes, each measured separately:
+
+1. **Relaxed tracker thresholds** (`detection.min_confidence` 0.75 -> 0.5,
+   `detection.max_gap` 4 -> 8; WiLoR itself still detects at conf 0.1) - a lot
+   of continuity for ~nothing:
 
 | Detection | Coverage L/R | Hand coverage | Action MPJPE | Wrist |
 | --- | --- | --- | --- | --- |
-| min_conf 0.75 / gap 4 (baseline) | 22.7 % / 86.9 % | 54.8 % | 183.08 mm | 57.35 mm |
-| min_conf 0.5 / gap 8 | 58.7 % / 97.8 % | 78.1 % | 185.32 mm | 56.77 mm |
+| min_conf 0.75 / gap 4 (reference profile) | 22.7 % / 86.9 % | 54.8 % | 183.08 mm | 57.35 mm |
+| min_conf 0.5 / gap 8 (**adopted in `hot3d_p100.yaml` / `unified.yaml`**) | 58.7 % / 97.8 % | 78.1 % | 185.32 mm | 56.77 mm |
 
-The recovered frames are exactly the ones WiLoR was unsure about, so their
-errors - previously excused as "missing" - now enter the average and cancel
-the gain; the wrist error still improves. Read: for visual continuity and
-downstream use, relax the thresholds (one `--set` away); for a leaderboard
-number, the thresholds are not what is holding the score back. The error
-budget at the operating point is dominated by world placement, not hands:
-camera error 80-118 mm + depth error 83-153 mm per episode vs wrist error
-57-81 mm - i.e. VGGT at window 8 with 111 Sim(3) stitches per clip (the
+2. **Continuity-first, mutually-exclusive tracker** (fixes the mesh "jumping to
+   the other hand" and the phantom hands). Two defects shared one root: the
+   tracker trusted WiLoR's per-detection handedness label every frame.
+   - Label swaps at crossings: hot3d_ep000 frame ~240 - each slot
+     reconstructed the OTHER hand.
+   - Phantom hands: hot3d_ep003 windows 144-175 and 352-375 - when the real
+     hand left the view (or only one hand was visible), a slot anchored on a
+     forearm / frame-edge fragment (34 % of ep003's boxes touch the frame
+     border) or both slots tracked the SAME single-hand detection, and HaWoR
+     reconstructed a second hand from that crop. Divergence up to 980 px.
+   The shipped tracker (`select_candidates_joint`) therefore: assigns each
+   detection to at most one slot; lets a slot adopt an unused detection only
+   when it overlaps the slot's own previous box (IoU >= 0.10, within the
+   recovery window); trades label-matched boxes for continuity when they
+   disagree; and **anchors only at confidence >= 0.75** - the 0.5-0.75 band on
+   this lens is mostly forearm/edge fragments and only feeds IoU-gated gap
+   recovery. Measured (predicted-only MPJPE):
+
+| Tracker state | Detection L/R (ep000 / ep003) | Hand coverage | MPJPE | Worst-window image error (ep003) |
+| --- | --- | --- | --- | --- |
+| label-only, strict | 22.7/86.9 %, 68.2/66.2 % | 54.8 % / 87.4 %* | 183.1 / 189.5 mm | 910-982 px |
+| + relaxed anchors 0.5 | 58.7/97.8 %, 85.8/89.1 % | 78.1 % / 87.4 % | 185.4 / 189.5 mm | 910-982 px |
+| + continuity (no exclusion) | 92.2/99.6 %, 91.6/98.7 % | 95.8 % / 95.1 % | 190.2 / 191.8 mm | 910-982 px |
+| **+ exclusion & 0.75 anchors (shipped)** | 34.9/92.2 %, 70.7/68.0 % | 63.6 % / 69.3 % | **187.8 / 188.8 mm** | **423-439 px** |
+
+   *the 87.4 % row predates the divergence analysis. Slot consistency after
+   the shipped state: reconstruction 11.5 px (median) from its own box,
+   3/154 frames with any slot ambiguity; the previously catastrophic regions
+   now reconstruct correctly (frame 150: mesh wrapped on the cube-holding
+   hand; frame ~420: both meshes on their hands). MPJPE improves over the
+   phantom-inflated states because garbage frames no longer dilute the
+   average; ep000's left-hand coverage drops to 34.9 % because most of its
+   true detections live in the unusable 0.5-0.75 band - honest gaps instead
+   of phantom hands.
+
+3. What remains as "the mesh is not exactly on the hand": the WiLoR box
+   centre sits 43 px (right) / 63 px (left, p90 167 px) from the GT-projected
+   joint centroid - a detector-box vs joint-centroid systematic, with no
+   systematic temporal lag (right hand: ±0.15 frames). HaWoR reconstructs
+   where the crop is, so it inherits that bias.
+
+The error budget at the operating point is dominated by world placement, not
+hands: camera error 80-118 mm + depth error 83-156 mm per episode vs wrist
+error 57-88 mm - i.e. VGGT at window 8 with 111 Sim(3) stitches per clip (the
 sm_60/P100 ceiling) and the scale drift they accumulate (bone-scale measured
 17-20 % hand-size wobble before correction).
+
+### Stitch knobs: denser correspondences do not help (negative result)
+
+`stitch.pixel_stride` 8 -> 4 + `ransac_iterations` 128 -> 512 on ep000:
+camera error 80.6 -> 83.4 mm, predicted-only MPJPE unchanged (185.4 mm). The
+stitcher is not correspondence-limited; the residual error lives in the
+8-frame windows themselves (sm_60 has no flash-attention). Defaults stay
+8/128; the only real camera-side lever is bigger windows on better hardware.
 
 ### Post-processing stages (all at the resolved focal)
 
@@ -120,6 +171,35 @@ Unlike on the mock scene, the refine stages move aggregate MPJPE by less than
 negative on real HaWoR output. This is expected: the mock's corruption model
 (synthetic depth noise + bone wobble) is far larger than HaWoR's real per-frame
 artefacts.
+
+### Short-gap interpolation (P2, added 2026-09-29 23:45)
+
+`refinement/gap_fill.py` fills missing runs of at most
+`refinement.gap_fill_max_frames` (default 12) hand-frames between two valid
+anchors with the per-joint linear blend of the anchors and marks every filled
+frame in the new `hand_interpolated` contract field; `evaluate_hot3d.py`
+reports the predicted-only numbers next to the headline ones whenever the
+mask is non-empty. Measured on the current artefacts - the on-disk
+`trajectory_raw.npz` valid rates (78.1 % on ep000, 87.4 % on ep003) postdate
+the detection-coverage numbers quoted above, so the no-fill baselines here
+differ from the older tables:
+
+| Episode / variant | MPJPE | pred-only MPJPE | Coverage | interpolated |
+| --- | --- | --- | --- | --- |
+| hot3d_ep000, no fill | 185.32 mm | = | 77.89 % | - |
+| hot3d_ep000 + P2 | 191.62 mm | 185.39 mm | 82.11 % | 4.44 % |
+| hot3d_ep003, no fill | 189.45 mm | = | 86.56 % | - |
+| hot3d_ep003 + P2 | 191.25 mm | 189.46 mm | 89.22 % | 3.67 % |
+
+Reading: P2 trades a little aggregate MPJPE for coverage. The fabricated
+frames are, as expected, less accurate than predicted ones (+6.3 mm / +1.8 mm
+overall), while the predicted frames themselves are untouched - the pred-only
+column matches the no-fill baseline, with the small residual coming from
+wrist-depth now optimising longer merged segments. This is the same trade the
+reference system makes when it reports 81 % coverage. The left hand's long
+blind stretches on ep000 stay missing: holes longer than `max_gap` are never
+extrapolated. Reports:
+`outputs/hot3d_ep0{00,03}_trajectory{,_gapfill}_report.json`.
 
 ### How to read the absolute numbers
 

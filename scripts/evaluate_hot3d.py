@@ -79,6 +79,31 @@ def main(argv: list[str] | None = None) -> int:
             valid=valid_frames,
         )
 
+        # The headline numbers include gap-filled frames; when the prediction
+        # carries an interpolation mask, report the predicted-only numbers next
+        # to them so the two can never be confused.
+        extra: dict[str, float] = {}
+        interpolated = prediction.interpolated_mask
+        if interpolated.any():
+            real_valid = prediction.valid & ~interpolated
+            real_only = action_mpjpe(
+                prediction.joints_world,
+                ground_truth.joints_world,
+                prediction_rotation_c2w=prediction.rotation_c2w,
+                prediction_translation_c2w=prediction.translation_c2w,
+                ground_truth_rotation_c2w=ground_truth.rotation_c2w,
+                ground_truth_translation_c2w=ground_truth.translation_c2w,
+                fps=prediction.fps,
+                chunk_seconds=chunk_seconds,
+                prediction_valid=real_valid,
+                ground_truth_valid=ground_truth.valid,
+            )
+            extra = {
+                "coverage_predicted_only": float(np.mean(real_valid & ground_truth.valid)),
+                "coverage_interpolated": float(np.mean(prediction.valid & interpolated)),
+                "action_mpjpe_predicted_only_mm": real_only.action_mpjpe_mm,
+            }
+
         if args.pipeline_seconds is not None:
             fps = measure_fps(prediction.num_frames, float(args.pipeline_seconds))
             fps_source = "pipeline"
@@ -92,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
             fps=fps,
             num_frames=prediction.num_frames,
             camera_error=camera_error,
+            extra=extra,
         )
         payload = report.as_dict()
         payload["fps_source"] = fps_source  # type: ignore[assignment]

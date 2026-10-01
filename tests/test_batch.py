@@ -13,6 +13,7 @@ things go wrong:
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -376,6 +377,59 @@ def test_failed_unit_is_retried_then_reported(tmp_path: Path, monkeypatch: pytes
     metadata = json.loads((tmp_path / "data" / "c1" / "metadata.json").read_text(encoding="utf-8"))
     assert metadata["degraded"] is True
     assert "detection failed" in metadata["degraded_reason"]
+
+
+def test_concurrent_units_spread_across_pinned_hosts(tmp_path: Path) -> None:
+    """Three max_parallel=1 GPU hosts must serve three concurrent units on
+    three different cards - a scheduler that stacks them on one host turns a
+    3-GPU box into a 1-GPU box with OOMs."""
+    runner = make_runner(
+        tmp_path,
+        [gpu_host(f"p100-{i}", backend="vggt", max_parallel=1) for i in range(3)],
+    )
+    unit = UnitSpec(clip="c1", stage="camera", selection=WindowSelection(), num_windows=1)
+    acquired: list[str] = []
+    barrier = threading.Barrier(3)
+    lock = threading.Lock()
+
+    def grab() -> None:
+        barrier.wait()
+        name = runner._acquire_host(unit).name
+        with lock:
+            acquired.append(name)
+
+    threads = [threading.Thread(target=grab) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert sorted(acquired) == ["p100-0", "p100-1", "p100-2"]
+
+
+def test_unit_waits_for_a_free_slot_when_all_hosts_are_busy(tmp_path: Path) -> None:
+    """A unit whose every capable host is at max_parallel waits instead of
+    over-subscribing a card."""
+    runner = make_runner(
+        tmp_path,
+        [gpu_host("only-gpu", backend="vggt", max_parallel=1)],
+    )
+    unit = UnitSpec(clip="c1", stage="camera", selection=WindowSelection(), num_windows=1)
+    first = runner._acquire_host(unit)
+    assert first.name == "only-gpu"
+
+    done = threading.Event()
+
+    def grab() -> None:
+        runner._acquire_host(unit)
+        done.set()
+
+    waiter = threading.Thread(target=grab, daemon=True)
+    waiter.start()
+    assert not done.wait(timeout=1.0), "second unit started while the host was full"
+    runner._release_host()
+    assert done.wait(timeout=30)
+    # the waiter now owns the slot; hand it back so the runner stays balanced
+    runner._release_host()
 
 
 def test_failed_unit_writes_no_marker_or_artefact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

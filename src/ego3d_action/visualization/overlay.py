@@ -113,6 +113,79 @@ def draw_hand_projection(
     return canvas
 
 
+def draw_hand_mesh(
+    frame: Array,
+    vertices_camera: Array,
+    faces: Array,
+    intrinsics: Array,
+    valid: Array,
+    *,
+    colours: Sequence[Sequence[int]] = (LEFT_COLOUR, RIGHT_COLOUR),
+    ambient: float = 0.30,
+) -> Array:
+    """Rasterise MANO meshes onto the frame with a depth-sorted painter's algorithm.
+
+    A headlight Lambert shading (face normal dotted with the view direction)
+    gives the mesh its shape; no GPU renderer is involved, so this works
+    wherever OpenCV does. Faces with any non-finite or behind-camera vertex are
+    skipped - holes stay holes, matching the never-fabricate rule.
+
+    Args:
+        frame: BGR image.
+        vertices_camera: ``[2, V, 3]`` mesh vertices in camera space (metres).
+        faces: one ``[F, 3]`` triangle-index array used for both hands, or a
+            two-element sequence with per-hand winding (the mirrored left hand
+            flips it).
+        intrinsics: ``[3, 3]`` or ``[2, 3, 3]`` camera matrix.
+        valid: ``[2]`` per-hand validity.
+        colours: BGR base colour per hand.
+        ambient: floor for the shading term.
+
+    Returns:
+        The canvas with both hands drawn.
+    """
+    cv2 = require_cv2()
+    canvas = np.asarray(frame).copy()
+    vertices = np.asarray(vertices_camera, dtype=np.float64)
+    faces_arr = np.asarray(faces, dtype=np.int64)
+    per_hand_faces = [faces_arr, faces_arr] if faces_arr.ndim == 2 else list(faces_arr)
+    if vertices.ndim != 3 or vertices.shape[0] != 2:
+        raise StageIOError(f"vertices_camera must be [2, V, 3], got {vertices.shape}")
+    intrinsics_all = np.asarray(intrinsics, dtype=np.float64)
+    if intrinsics_all.ndim == 2:
+        intrinsics_all = np.broadcast_to(intrinsics_all, (2, 3, 3))
+
+    for hand in range(2):
+        if not np.asarray(valid, dtype=bool)[hand]:
+            continue
+        faces = per_hand_faces[hand]
+        pixels = project_points(intrinsics_all[hand], vertices[hand])
+        depth = vertices[hand][:, 2]
+        drawable = np.isfinite(pixels).all(axis=1) & np.isfinite(depth) & (depth > 1e-6)
+        if drawable.sum() < 3:
+            continue
+        tri = faces[drawable[faces].all(axis=1)]
+        if not len(tri):
+            continue
+        # Headlight Lambert with a *signed* dot: MANO's faces wind outward, so
+        # faces pointing away from the camera go dark (and are overpainted by
+        # the front ones anyway) - that is what gives the mesh its 3D read.
+        v0, v1, v2 = vertices[hand][tri[:, 0]], vertices[hand][tri[:, 1]], vertices[hand][tri[:, 2]]
+        normals = np.cross(v1 - v0, v2 - v0)
+        norm = np.linalg.norm(normals, axis=1, keepdims=True)
+        to_camera = -v0 / np.maximum(np.linalg.norm(v0, axis=1, keepdims=True), 1e-12)
+        facing = np.einsum("fc,fc->f", normals, to_camera)[..., None] / np.maximum(norm, 1e-12)
+        shade = np.clip(ambient + (1.0 - ambient) * np.maximum(facing, 0.0), 0.0, 1.0)
+        base = np.asarray(colours[hand], dtype=np.float64)
+        order = np.argsort(-np.stack([v0, v1, v2], axis=1).mean(axis=1)[:, 2])  # far first
+        polys = np.round(pixels[tri]).astype(np.int32)
+        for face_index in order:
+            cv2.fillPoly(canvas, [polys[face_index]], tuple(
+                int(c) for c in (base * shade[face_index])
+            ))
+    return canvas
+
+
 def _video_writer(cv2: object, path: Path, fps: float, size: tuple[int, int]) -> object:
     writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
     if not writer.isOpened():
@@ -209,8 +282,15 @@ def write_hand_video(
     out_path: str | Path,
     *,
     fps: float = 30.0,
+    vertices_camera: Array | None = None,
+    faces: Sequence[Array] | None = None,
 ) -> Path:
-    """Write ``02_hawor.mp4``: RGB + projected 3D hand skeleton."""
+    """Write ``02_hawor.mp4``: RGB + projected hands.
+
+    With ``vertices_camera`` (``[T, 2, V, 3]``) and per-hand ``faces`` the full
+    MANO mesh is rasterised (the MINT-style overlay); without them the writer
+    falls back to the 21-joint skeleton.
+    """
     cv2 = require_cv2()
     frames = list(frame_paths)
     if not frames:
@@ -218,6 +298,13 @@ def write_hand_video(
     joints = np.asarray(joints_camera, dtype=np.float64)
     if joints.shape[0] < len(frames):
         raise StageIOError(f"joints cover {joints.shape[0]} frames but {len(frames)} were given")
+    vertices = (
+        None
+        if vertices_camera is None or faces is None
+        else np.asarray(vertices_camera, dtype=np.float64)
+    )
+    if vertices is not None and vertices.shape[0] < len(frames):
+        raise StageIOError(f"vertices cover {vertices.shape[0]} frames but {len(frames)} were given")
 
     target = Path(out_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -232,9 +319,14 @@ def write_hand_video(
             if frame is None:
                 raise StageIOError(f"cannot decode {path}")
             camera_valid = np.asarray(valid[index], dtype=bool) & np.isfinite(joints[index]).all(axis=(1, 2))
-            writer.write(
-                draw_hand_projection(frame, joints[index], intrinsics[index], camera_valid)
-            )
+            if vertices is not None and faces is not None:
+                frame_valid = camera_valid & np.isfinite(vertices[index]).all(axis=(1, 2))
+                canvas = draw_hand_mesh(
+                    frame, vertices[index], faces, intrinsics[index], frame_valid
+                )
+            else:
+                canvas = draw_hand_projection(frame, joints[index], intrinsics[index], camera_valid)
+            writer.write(canvas)
     finally:
         writer.release()
     transcode_to_h264(target)

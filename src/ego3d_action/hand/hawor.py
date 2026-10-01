@@ -249,6 +249,7 @@ def load_hand_window(path: str | Path) -> HandWindow:
         confidence=data["confidence"],
         root_rot=data.get("root_rot"),
         betas=data.get("betas"),
+        vertices_camera=data.get("vertices_camera"),
     )
 
 
@@ -270,6 +271,10 @@ def save_hand_window(window: HandWindow, path: str | Path) -> Path:
         payload["root_rot"] = window.root_rot
     if window.betas is not None:
         payload["betas"] = window.betas
+    if window.vertices_camera is not None:
+        # float32: 778 verts x 2 hands x 450 frames is ~8 MB per clip, and the
+        # extra precision is invisible at video resolution.
+        payload["vertices_camera"] = np.asarray(window.vertices_camera, dtype=np.float32)
     return save_npz(path, **payload)
 
 
@@ -355,12 +360,15 @@ def hand_windows_from_joints(
     overlap: int = 8,
     root_rot: np.ndarray | None = None,
     betas: np.ndarray | None = None,
+    vertices_camera: np.ndarray | None = None,
     selection: WindowSelection | None = None,
 ) -> list[Path]:
     """Split camera-space joints into the 16/8 HaWoR windows on disk.
 
     ``joints_camera`` is ``[T, 2, 21, 3]`` in metres; frames without a hand must
-    be ``NaN`` and invalid. Nothing is interpolated.
+    be ``NaN`` and invalid. Nothing is interpolated. ``vertices_camera``
+    (``[T, 2, V, 3]``, optional) rides along so the debug video can draw the
+    MANO mesh instead of a bare skeleton.
 
     ``selection`` restricts the written windows to one shard of the clip's
     schedule. The schedule is still derived from the global ``window``/``overlap``,
@@ -376,6 +384,13 @@ def hand_windows_from_joints(
             f"valid {valid_array.shape} and confidence {conf_array.shape} must match "
             f"{joints.shape[:2]}"
         )
+    vertices = (
+        None if vertices_camera is None else np.asarray(vertices_camera, dtype=np.float32)
+    )
+    if vertices is not None and vertices.shape[:2] != joints.shape[:2]:
+        raise StageIOError(
+            f"vertices_camera {vertices.shape[:2]} must match joints {joints.shape[:2]}"
+        )
     request = HaworClipRequest(num_frames=joints.shape[0], frames_dir=Path("."), window=window, overlap=overlap)
     active = selection or WindowSelection()
     written: list[Path] = []
@@ -389,6 +404,11 @@ def hand_windows_from_joints(
             confidence=conf_array[start:end],
             root_rot=None if root_rot is None else np.asarray(root_rot)[start:end],
             betas=None if betas is None else np.asarray(betas)[start:end],
+            vertices_camera=(
+                None
+                if vertices is None
+                else np.where(valid_array[start:end, :, None, None], vertices[start:end], np.nan)
+            ),
         )
         written.append(save_hand_window(window_obj, target / f"{start:06d}_{end - 1:06d}.npz"))
     return written

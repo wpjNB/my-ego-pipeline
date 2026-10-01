@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Phase 6: targeted post-processing (camera filter, bone scale, wrist depth)."""
+"""Phase 6: targeted post-processing (gap fill, camera filter, bone scale, wrist depth)."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from ego3d_action.io.artefacts import clip_metadata  # noqa: E402
 from ego3d_action.io.serialization import load_npz, save_json, save_npz  # noqa: E402
 from ego3d_action.refinement.bone_scale import correct_bone_scale  # noqa: E402
 from ego3d_action.refinement.camera_filter import filter_camera_translation  # noqa: E402
+from ego3d_action.refinement.gap_fill import DEFAULT_MAX_GAP, interpolate_hand_gaps  # noqa: E402
 from ego3d_action.refinement.wrist_depth import optimize_wrist_depth  # noqa: E402
 
 
@@ -28,6 +29,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-camera-filter", action="store_true")
     parser.add_argument("--no-bone-scale", action="store_true")
     parser.add_argument("--no-wrist-depth", action="store_true")
+    parser.add_argument(
+        "--no-gap-fill",
+        action="store_true",
+        help="keep missing frames missing instead of interpolating short gaps",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -48,6 +54,24 @@ def main(argv: list[str] | None = None) -> int:
         translation = np.asarray(data["camera_t_c2w"], dtype=np.float64)
         intrinsics = np.asarray(data["camera_K"], dtype=np.float64)
         fps = float(clip_metadata(layout)["fps"])
+
+        # P2: fill short detection gaps before the other corrections so bone
+        # scale and wrist depth see a contiguous trajectory. Filled frames are
+        # marked in hand_interpolated and enter hand_valid.
+        interpolated = np.zeros(valid.shape, dtype=bool)
+        gap_report: dict[str, float] = {}
+        if not args.no_gap_fill:
+            max_gap = int(context.config.get("refinement.gap_fill_max_frames", DEFAULT_MAX_GAP))
+            filled = interpolate_hand_gaps(joints_camera, valid, confidence, max_gap=max_gap)
+            joints_camera = filled.joints_camera
+            confidence = filled.confidence
+            valid = filled.valid
+            interpolated = filled.interpolated
+            gap_report = {
+                "gap_fill_max_frames": float(max_gap),
+                "gap_fill_gaps": float(filled.gaps_filled),
+                "gap_fill_frames": float(filled.frames_filled),
+            }
 
         refined_translation = translation
         if not args.no_camera_filter:
@@ -113,6 +137,9 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "hand_xyz_camera": corrected_camera,
                 "hand_xyz_world": world,
+                "hand_valid": valid,
+                "hand_interpolated": interpolated,
+                "hand_confidence": confidence,
                 "camera_t_c2w": refined_translation,
             }
         )
@@ -131,8 +158,10 @@ def main(argv: list[str] | None = None) -> int:
                 "camera_filter_applied": not args.no_camera_filter,
                 "bone_scale_applied": not args.no_bone_scale,
                 "wrist_depth_applied": not args.no_wrist_depth,
+                "gap_fill_applied": not args.no_gap_fill,
                 **bone_report,
                 **wrist_report,
+                **gap_report,
             },
         )
         if output_path == layout.trajectory_path:

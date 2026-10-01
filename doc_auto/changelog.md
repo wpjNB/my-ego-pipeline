@@ -1,5 +1,239 @@
 # Changelog
 
+## 2026-09-30 15:05 (+08:00) - combined EGO | WORLD viewer, after the Wuji reference
+
+Studied the reference ecosystem's own visualisation stack before building:
+Macrodata's open-source repo is `macrodata-labs/refiner` (an Apache-2.0
+dataset-processing library - no viewer in it), and Wuji Technology's
+`wuji-hand-teleop` (ROS2 teleop) visualises through RViz + a Qt monitor, with
+the robot hand as open URDFs. The blog's three-panel screenshot is therefore
+not a single open tool; the panel styles were reproduced here instead:
+
+* `scripts/render_viewer.py` - one synchronised video, two panels per frame:
+  EGO VIEW (RGB + MANO mesh reprojected + left/right validity badges) beside
+  WORLD SPACE (trails growing to the current frame, camera path, hero hands).
+  Reuses `render_world_space`'s drawing and the mesh rasteriser; H.264 via the
+  standard transcoder. Outputs `visualization/viewer.mp4` per clip
+  (`--gt` overlays reference trails in the world panel).
+* The third reference panel (ROBOT HAND) is now a documented follow-up, not a
+  hard wall: `wuji-technology/wuji-retargeting` is MIT-licensed pure Python
+  (DexRetargeting-based, NLOPT), the Wuji Hand URDFs ship in the teleop repo,
+  and MuJoCo 3.11 is already installed in the `ego3d` env. Path: MANO world
+  joints -> retargeting configs -> joint angles -> MuJoCo render.
+
+Also fixed while wiring the viewer: cv2.VideoWriter now initialises from the
+first composed frame's true size (the ego panel's scaled width is not round;
+a fixed declared size silently dropped every frame and produced a 257-byte
+file).
+
+## 2026-09-30 13:25 (+08:00) - WORLD SPACE panel: camera + both hands in the stitched world
+
+Implemented the reference system's middle panel (the blog's "WORLD SPACE"):
+`scripts/render_world_space.py` renders the stitched world frame with both
+MANO wrist trails (cyan left / yellow right), ghost skeletons along the
+trails, the camera path, dashed drop lines to the floor grid, the +X/+Y/+Z
+triad at World-0, per-wrist height labels, a 10 cm scale bar and a top-down
+view - dark theme, centimetres, 3D + XY double view. `--video` animates the
+trails growing with the current hands and camera pose per frame; `--gt`
+overlays the reference trails (the height labels then directly show the
+predicted-vs-reference wrist heights, e.g. L 28.2 vs 32.4 cm on ep000).
+Pure matplotlib/Agg + the existing H.264 transcoder; no GPU. Outputs:
+`visualization/world_space.png` + `world_space_time.mp4` per clip, embedded
+in `outputs/visual_gallery.html`.
+
+Follow-up after first review: the hand fans are now dense (skeleton every 10
+frames, thicker current hand with joint dots) so the hands dominate the
+panel, and the title carries the measured wrist |PRED-GT| statistics
+(median 8.9 cm on ep000, 12.6 cm / p90 19.0 cm on ep003). The gap is real
+error, not a plotting artefact: both world frames are normalised to their
+frame-0 camera (cameras at the origin, wrist error ~2 cm at frame 0) and the
+distance grows with the stitched camera drift - the same camera/depth error
+budget the evaluation reports. The panel shows raw world frames (no
+per-chunk re-anchoring), which is why the drift is visible here while the
+chunk-anchored metric hides it. Also fixed in passing: the title statistic
+initially reported the first frame's error instead of the median.
+
+## 2026-09-30 12:45 (+08:00) - reference-recipe audit against the Macrodata blog
+
+Full section-by-section comparison of the repo against the reference blog
+(`macrodata.co/blog/turning-egocentric-video-into-3d-hand-actions`), now in
+`doc_auto/blog_comparison.md`. Verdict: faithful at the module level; the
+52.04 mm reference value is unreachable on P100s (their own sweep puts the
+camera window as the dominant lever: 60 frames -> 62.14 mm, 200 -> 55.95; we
+run 8). Two recipe divergences found and fixed:
+
+* **Bone-scale reference `median` -> `mean`** in every config (the recipe's
+  ablation measured mean better, median regressed; our own two-episode A/B
+  splits within noise: 186.75/187.92 and 189.22/188.49).
+* **Hand-joint smoothing code default 1 -> 0** (the recipe disables it; every
+  variant regressed at reference quality). The host configs keep an explicit
+  `smooth_passes: 1` opt-in - our operating point is far noisier and one pass
+  measured MPJPE-neutral while damping the mesh wobble.
+
+Open conformance gap, documented not yet run: the learned `hawor_infiller` is
+still in the runner while the recipe measured it worse than benchmark gap
+filling (+1.59 mm) and disabled it - the experiment is a runner change plus
+~5 GPU-minutes on both clips.
+
+Test suite: **410 passed**, 1 skipped.
+
+## 2026-09-30 12:00 (+08:00) - hand-trajectory smoothing: the mesh wobble damped where it can be
+
+User-visible defect: rapid mesh jitter in `02_hawor.mp4`. Measured, not
+guessed - three separate components:
+
+* **White reconstruction noise** (per-frame, uncorrelated): wrist step median
+  17-20 mm/frame with ~8 mm high-frequency residual. Now damped by one
+  `[1, 2, 1] / 4` binomial pass over the blended camera-space hands
+  (`temporal_blend.smooth_hand_trajectory`, config `hand.smooth_passes`, one
+  by default) - per hand, only inside valid runs, edges and gaps untouched,
+  vertices smoothed with the same taps. Wrist step drops to 11 mm/frame;
+  MPJPE is unchanged-to-slightly-better (the GT punishes noise).
+* **Mid-frequency oscillation** (~2 deg/frame palm-direction residual,
+  p90 4-6 deg; 4-5 px/frame per-vertex): HaWoR's own temporal model. Two and
+  three smoothing passes leave it untouched (measured) while smearing real
+  motion - not fixable post-hoc; that is a model-quality limit and the honest
+  answer to "why does it still wobble a little".
+* Ruled out: tracked-box jitter (2-3 px high-frequency residual on the box
+  centres), valid-mask flicker (median valid runs 37-96 frames), intrinsics
+  drift (the sample camera K is constant), and render-side sort instability
+  (the geometry jitter dominates anything the painter's algorithm adds).
+
+`hand.smooth_passes: 1` shipped in `hot3d_p100.yaml` / `unified.yaml` with the
+measurement note. Regression test: spike damping + gap/edge preservation +
+vertex consistency. Test suite: **410 passed**, 1 skipped.
+
+## 2026-09-30 11:30 (+08:00) - phantom hands fixed: slot-exclusive, continuity-first tracking
+
+The mesh-overlay follow-up exposed what the previous tracker fix had only
+hidden: with anchors admitted at confidence 0.5 and no mutual exclusion
+between slots, HaWoR reconstructed *phantom* hands. hot3d_ep003 windows
+144-175 / 352-375 diverged by up to 980 px because (a) a slot anchored on a
+forearm / frame-edge fragment after the real hand left the view (34 % of
+ep003's boxes touch the border; the phantoms all sat in the 0.5-0.75
+confidence band), and (b) when only one hand was visible BOTH slots tracked
+the same detection and the backend fit a second hand to its crop.
+
+`detection/tracker.py` is restructured around a joint two-slot selector
+(`select_candidates_joint`):
+
+* one detection feeds at most one slot (mutual exclusion);
+* a slot with no same-label candidate may adopt an unused detection only when
+  it overlaps the slot's own previous box (IoU >= 0.10, within the recovery
+  window) - swapped labels at crossings are corrected by the continuity
+  upgrade, including the both-slots-hold-each-other's-hand case (straight
+  trade) and steals from the other slot when it has no continuity claim;
+* anchors require confidence >= 0.75 again (config: `detection.min_confidence`
+  back to the spec value with the rationale inline); the 0.5-0.75 band only
+  feeds IoU-gated gap recovery;
+* adoption stops after `max_gap` frames without a candidate.
+
+Measured (ep000 / ep003, predicted-only MPJPE): **187.8 / 188.8 mm** (was
+190.2 / 191.8 with phantoms at 95 % coverage, 185.4 / 189.5 strict), hand
+coverage 63.6 % / 69.3 % (honest gaps instead of phantom hands), ep003
+worst-window image error 980 px -> 439 px, slot consistency 11.5 px median.
+Visual acceptance on the previously divergent regions: mesh wrapped on the
+cube-holding hand at frame 150, both meshes on their hands at frame ~420.
+Regressions: crossing-with-swapped-labels, single-hand mutual exclusion,
+distant-detection non-adoption. Test suite: **409 passed**, 1 skipped.
+
+## 2026-09-30 10:40 (+08:00) - continuity-first tracking: the mesh no longer jumps hands
+
+User-visible defect: the MANO mesh overlay lagged and periodically sat on the
+wrong hand entirely. Diagnosis against the MANO ground-truth projection:
+
+* **Slot swap at hand crossings** (the big one): the tracker trusted WiLoR's
+  per-detection handedness label every frame, and the labels swap when both
+  hands are in frame - on hot3d_ep000 around frame 240 each slot reconstructed
+  the OTHER hand (left-model output sitting in the bowl, box on the right
+  hand). `conservative_track` now selects each frame's candidate by IoU
+  continuation of its own previous box (within the recovery window, floor
+  0.10) and only lets the label decide when continuity is uninformative -
+  track start or the stale horizon after a long gap. Regression-tested with a
+  synthetic crossing whose labels swap mid-way.
+* **No systematic temporal lag**: regressing box-vs-GT-projection error on
+  hand velocity gives ±0.15 frames on the right hand (~2 frames on the left,
+  x only). The remaining "not exactly on the hand" is the WiLoR box centre
+  sitting 43 px (right) / 63 px (left) from the GT joint centroid - a
+  detector-box-vs-joint-centroid systematic that HaWoR inherits from the crop,
+  not a tracking bug.
+
+Effect (ep000 / ep003): detection coverage 92.2/99.6 % and 91.6/98.7 %, hand
+coverage **95.8 % / 95.1 %** (was 78.1 / 87.4 %), predicted-only MPJPE
+190.2 / 191.8 mm (was 185.4 / 189.5 - the recovered frames are the hard ones,
+same trade as the threshold change). Slot consistency after the fix:
+reconstruction 14 px (median) from its own box, 21/413 frames with any slot
+nearer the other box. Full chain re-run on both clips, videos re-rendered.
+
+Test suite: **406 passed**, 1 skipped.
+
+## 2026-09-29 23:59 (+08:00) - MANO mesh overlay + detection thresholds adopted; stitch knobs rejected
+
+Two upgrades from the "what would improve this" list, one negative result:
+
+* **Mesh overlay (`02_hawor.mp4` now draws the MANO mesh, not a skeleton).**
+  HaWoR's `run_mano` already returns per-frame vertices alongside joints, so
+  `hawor_runner` passes them through the same world->camera transform
+  (`to_camera_space(..., vertices=...)`, `vertices_camera` in the window and
+  clip artefacts), `blend_hand_windows` blends them with the joint weights,
+  and `overlay.draw_hand_mesh` rasterises them with a depth-sorted
+  painter's algorithm + headlight Lambert shading - no pytorch3d needed (the
+  P100 host has no nvcc). Missing frames stay missing; per-hand winding comes
+  from `MANO_RIGHT.npz` with `mirror_to_left`'s flip. Without vertices the
+  writer falls back to the skeleton. Tests: to_camera_space vertices, blend
+  round-trip, rasteriser occlusion/hole cases.
+* **Detection thresholds adopted on this host** (`hot3d_p100.yaml`,
+  `unified.yaml`): `min_confidence` 0.5 / `max_gap` 8. Measured trade on
+  ep000: hand coverage 54.8 % -> 78.1 % (left detection 22.7 % -> 58.7 %),
+  wrist error improves, predicted-only MPJPE 183.1 -> 185.4 mm (the recovered
+  frames are the hard ones). ep003 under the same policy: hand coverage 87.4 %,
+  detection 85.8 % / 89.1 %. The reference profiles stay strict.
+* **Stitch knobs rejected**: `pixel_stride` 4 + `ransac_iterations` 512 leave
+  predicted-only MPJPE unchanged (185.4 mm) and nudge the camera error up
+  (80.6 -> 83.4 mm) - the stitcher is not correspondence-limited; the window
+  size is the binding constraint. Defaults stay 8/128
+  (`doc_auto/ablation.md`).
+
+Note: the working tree switched to `main` mid-session (reflog: checkout
+during the ep003 re-run); all work lives on `feature/pipeline-bootstrap`,
+where it was committed as `8c2ca23`. Test suite: **404 passed**, 1 skipped.
+
+## 2026-09-29 23:45 (+08:00) - P2: short-gap interpolation of missing hand poses
+
+The reference pipeline's post-processing stage P2 (interpolate missing poses)
+is now implemented as `refinement/gap_fill.py` and runs by default in
+`scripts/run_refine.py` (`--no-gap-fill` restores the old behaviour;
+`refinement.gap_fill_max_frames`, default 12, caps the interpolated hole
+length at 0.4 s / 30 fps). A hand-frame is an anchor only when `hand_valid`
+is set *and* every joint is finite; each missing run of at most `max_gap`
+frames between two anchors is filled per joint with the linear blend of its
+anchors (the trajectory contract carries joint positions, not rotation
+parameters, so the figure's SLERP reduces to linear position blending - the
+same convention `hand/temporal_blend.py` already uses). Confidence follows the
+same blend so the wrist-depth stage treats filled frames like their
+neighbours. Leading/trailing missing frames and holes longer than `max_gap`
+stay missing.
+
+Every filled frame is recorded in a new required trajectory-contract field
+`hand_interpolated` (`[T, 2]` bool; fusion and the HOT3D reference emit
+all-`False`), and `evaluate_hot3d.py` reports the predicted-only numbers
+next to the headline ones whenever the mask is non-empty, so interpolated
+and predicted coverage can never be confused. Long holes stay missing: on
+`hot3d_ep000` the left hand's long blind stretches are untouched by design.
+
+Measured on the current artefacts (the on-disk `trajectory_raw.npz` valid
+rates - 78.1 % on `hot3d_ep000`, 87.4 % on `hot3d_ep003` - postdate the
+detection-coverage numbers quoted above; both baselines re-measured here):
+gap fill interpolates 40 hand-frames on `hot3d_ep000` (16 holes) and 33 on
+`hot3d_ep003` (9 holes), raising evaluator coverage 77.9 -> 82.1 % and
+86.6 -> 89.2 % at +6.3 mm / +1.8 mm aggregate MPJPE (the fabricated frames
+are, as expected, less accurate than predicted ones; the predicted-only
+numbers are unchanged by construction). On the mock scene, where the planted
+10-frame hole sits on smooth motion, P2 improves both columns:
+25.90 -> 25.81 mm at 90.7 -> 92.0 % coverage. Full tables in
+`doc_auto/ablation.md`; reports in `outputs/hot3d_ep0{00,03}_trajectory{,_gapfill}_report.json`.
+Suite: 404 passed.
+
 ## 2026-09-29 20:50 (+08:00) - focal fix validated on MANO ground truth; first scored real run
 
 `data/hot3d` turned out to carry the same partial-sync damage as the meta

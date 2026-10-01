@@ -301,7 +301,9 @@ def synthetic_detections(
       low-confidence detection whose box matches the interpolated anchor box, so
       the conservative tracker must recover exactly that frame;
     * frames 30-39 of the right hand vanish entirely (10-frame hole > the
-      4-frame rule), so they must stay missing.
+      4-frame rule), so the tracker must not bridge them. Refinement's gap
+      fill interpolates such holes afterwards (10 <= max_gap) and marks every
+      frame it invented in ``hand_interpolated``.
     """
     intrinsics = make_intrinsics(width, height)
     rotation, translation = make_camera_trajectory(num_frames, seed=seed)

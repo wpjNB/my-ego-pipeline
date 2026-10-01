@@ -25,10 +25,18 @@ class EvalTrajectory:
     source: Path
     num_frames: int
     metadata: dict[str, object]
+    interpolated: Array | None = None  # [T, 2] gap-filled frames (None = artefact predates P2)
 
     @property
     def coverage(self) -> float:
         return float(np.mean(self.valid)) if self.valid.size else 0.0
+
+    @property
+    def interpolated_mask(self) -> Array:
+        """``[T, 2]`` bool mask of gap-filled frames (all ``False`` if absent)."""
+        if self.interpolated is None:
+            return np.zeros((self.num_frames, 2), dtype=bool)
+        return np.asarray(self.interpolated, dtype=bool)
 
 
 def load_trajectory(
@@ -75,6 +83,11 @@ def load_trajectory(
 
     joints = np.asarray(data["hand_xyz_world"], dtype=np.float64)
     valid = np.asarray(data["hand_valid"], dtype=bool)
+    interpolated = (
+        np.asarray(data["hand_interpolated"], dtype=bool)
+        if "hand_interpolated" in data
+        else None
+    )
     return EvalTrajectory(
         joints_world=joints,
         valid=valid,
@@ -84,4 +97,5 @@ def load_trajectory(
         source=source,
         num_frames=int(joints.shape[0]),
         metadata=metadata,
+        interpolated=interpolated,
     )

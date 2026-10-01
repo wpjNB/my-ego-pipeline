@@ -7,6 +7,9 @@ Macrodata's final system does **not** use the upstream HaWoR
 high confidence              ``confidence >= 0.75``
 gap recovery window          same-side gap ``<= 4`` frames
 recovery matching            interpolated-box IoU ``>= 0.20``
+continuity                   best IoU against the side's previous box
+                             (within the recovery window) wins over the
+                             handedness label - labels swap when hands cross
 ===========================  ==========================================
 
 Only gaps *between two high-confidence anchors* are considered, and a low
@@ -124,6 +127,103 @@ def interpolate_box(box_a: Array, box_b: Array, alpha: float) -> Array:
     return (1.0 - float(alpha)) * a + float(alpha) * b
 
 
+def select_candidates_joint(
+    detections: Sequence[Sequence[HandDetection]],
+    *,
+    num_frames: int,
+    max_gap: int,
+    continuity_iou_floor: float = 0.10,
+) -> dict[int, list[HandDetection | None]]:
+    """Pick each side's candidate per frame, both sides in lockstep.
+
+    Rules, in the order they matter:
+
+    * **Label first**: a detection belongs to the side its handedness names.
+    * **Continuity adoption**: a side with no same-label candidate may adopt an
+      unused detection that overlaps its own previous box (IoU gate, within the
+      recovery window) - labels swap when hands cross, boxes do not lie.
+    * **Mutual exclusion**: one detection feeds at most one slot. Without this,
+      when only one hand is visible the other side adopts the same box and the
+      backend reconstructs a phantom second hand from the same crop
+      (hot3d_ep003 frames 144-175).
+    * **Stale horizon**: adoption stops after ``max_gap`` frames without a
+      candidate - the hand may have reappeared anywhere.
+
+    Returns ``{side: [candidate or None per frame]}``.
+    """
+    picks: dict[int, list[HandDetection | None]] = {side: [] for side in SIDES}
+    last_box: dict[int, Array | None] = {side: None for side in SIDES}
+    last_frame: dict[int, int] = {side: -10**9 for side in SIDES}
+    for frame in range(num_frames):
+        taken: set[int] = set()
+        frame_picks: dict[int, HandDetection | None] = {}
+        # Pass 1 - label picks (highest confidence, then largest area).
+        for side in SIDES:
+            pool = [
+                d for d in detections[frame]
+                if d.handedness == side and id(d) not in taken
+            ]
+            pick = max(pool, key=lambda d: (d.confidence, d.area)) if pool else None
+            frame_picks[side] = pick
+            if pick is not None:
+                taken.add(id(pick))
+        # Pass 2 - continuity adoption from the unused pool.
+        for side in SIDES:
+            if frame_picks[side] is not None:
+                continue
+            if last_box[side] is None or frame - last_frame[side] > max_gap:
+                continue
+            continuing = [
+                d for d in detections[frame]
+                if id(d) not in taken and box_iou(d.bbox, last_box[side]) >= continuity_iou_floor
+            ]
+            if continuing:
+                frame_picks[side] = max(continuing, key=lambda d: (d.confidence, d.area))
+                taken.add(id(frame_picks[side]))
+
+        def _continues(side: int, det: HandDetection | None) -> float:
+            """IoU of ``det`` against the side's fresh previous box (-1 if stale)."""
+            if det is None or last_box[side] is None or frame - last_frame[side] > max_gap:
+                return -1.0
+            return box_iou(det.bbox, last_box[side])
+
+        # Pass 2a - continuity upgrade. Swapped labels at a crossing leave each
+        # slot holding the box that belongs to the other track; a label-matched
+        # box that does not continue the track loses to one that does.
+        discontinuous = [s for s in SIDES if 0.0 <= _continues(s, frame_picks[s]) < continuity_iou_floor]
+        if len(discontinuous) == 2:
+            # Each slot is holding the other side's hand - trade them back.
+            frame_picks[LEFT], frame_picks[RIGHT] = frame_picks[RIGHT], frame_picks[LEFT]
+        else:
+            for side in discontinuous:
+                current = frame_picks[side]
+                if current is None:
+                    continue
+                other = frame_picks[1 - side]
+                pool = [
+                    d for d in detections[frame]
+                    if d is not current
+                    and (id(d) not in taken or d is other)
+                    and _continues(side, d) > _continues(side, current)
+                ]
+                if not pool:
+                    continue
+                best = max(pool, key=lambda d: (_continues(side, d), d.confidence))
+                if best is other:
+                    # Straight swap: the other side takes our released box.
+                    frame_picks[1 - side] = current
+                else:
+                    taken.discard(id(current))
+                frame_picks[side] = best
+                taken = {id(p) for s in SIDES if (p := frame_picks[s]) is not None}
+        for side in SIDES:
+            picks[side].append(frame_picks[side])
+            if frame_picks[side] is not None:
+                last_box[side] = frame_picks[side].bbox
+                last_frame[side] = frame
+    return picks
+
+
 def conservative_track(
     detections: Sequence[Sequence[HandDetection]],
     *,
@@ -137,8 +237,10 @@ def conservative_track(
 
     Args:
         detections: ``detections[t]`` is the list of candidate
-            :class:`HandDetection` objects for frame ``t``. Candidates whose
-            ``handedness`` differs from ``side`` are ignored.
+            :class:`HandDetection` objects for frame ``t``. The handedness
+            label seeds the track, but continuity wins: a differently-labelled
+            detection that better continues this side's box is followed
+            instead, so swapped labels at hand crossings cannot switch sides.
         side: ``0`` for the left hand, ``1`` for the right hand.
         num_frames: clip length; inferred from ``detections`` when omitted.
         min_confidence: anchor threshold (spec: ``0.75``).
@@ -175,14 +277,7 @@ def conservative_track(
     recovered = np.zeros(total, dtype=bool)
     track_id = np.full(total, -1, dtype=np.int64)
 
-    # Best candidate per frame (highest confidence, then largest area).
-    candidates: list[HandDetection | None] = []
-    for frame in range(total):
-        pool = [d for d in detections[frame] if d.handedness == side]
-        if not pool:
-            candidates.append(None)
-            continue
-        candidates.append(max(pool, key=lambda d: (d.confidence, d.area)))
+    candidates = select_candidates_joint(detections, num_frames=total, max_gap=max_gap)[side]
 
     anchors = [
         frame

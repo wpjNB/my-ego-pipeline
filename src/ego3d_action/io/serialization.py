@@ -109,6 +109,7 @@ TRAJECTORY_FIELDS: dict[str, str] = {
     "hand_xyz_camera": "[T, 2, 21, 3]",
     "hand_valid": "[T, 2]",
     "hand_confidence": "[T, 2]",
+    "hand_interpolated": "[T, 2]",
     "camera_R_c2w": "[T, 3, 3]",
     "camera_t_c2w": "[T, 3]",
     "camera_K": "[T, 3, 3]",

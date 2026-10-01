@@ -227,3 +227,39 @@ def test_wrist_comparison_can_draw_the_reference_skeleton(tmp_path: Path) -> Non
         fps=3.0,
     )
     assert plain.is_file() and plain.stat().st_size > 0
+
+
+def test_draw_hand_mesh_rasterises_with_occlusion_and_holes() -> None:
+    """Mesh drawing: near faces win, invalid hands and behind-camera faces skip."""
+    frame = np.zeros((48, 48, 3), dtype=np.uint8)
+    # A tetrahedron at z = 2 m: one big far face plus a small near face that
+    # overlaps it - the near face must win where they cover the same pixels.
+    verts = np.zeros((2, 4, 3))
+    verts[0, 0] = [-0.2, -0.2, 2.0]
+    verts[0, 1] = [0.2, -0.2, 2.0]
+    verts[0, 2] = [0.0, 0.2, 2.0]
+    verts[0, 3] = [0.0, 0.0, 1.5]  # the near vertex
+    verts[1] = verts[0]
+    faces = np.array([[0, 1, 2], [0, 1, 3], [1, 2, 3], [0, 2, 3]])
+    intrinsics = np.array([[32.0, 0, 24], [0, 32.0, 24], [0, 0, 1]])
+    canvas = overlay.draw_hand_mesh(
+        frame, verts, faces, intrinsics, np.array([True, False]),
+        colours=[(0, 0, 255), (0, 255, 0)],
+    )
+    drawn = (canvas.sum(axis=2) > 0).sum()
+    assert 0 < drawn < 48 * 48  # something appeared, image not flooded
+    assert (canvas[24, 24] > 0).any()  # the near faces cover the centre
+
+    # Both hands invalid: canvas untouched.
+    untouched = overlay.draw_hand_mesh(
+        frame, verts, faces, intrinsics, np.array([False, False])
+    )
+    assert not (untouched.sum(axis=2) > 0).any()
+
+    # A face entirely behind the camera is dropped, not projected through.
+    behind = verts.copy()
+    behind[..., 2] = -1.0
+    empty = overlay.draw_hand_mesh(
+        frame, behind, faces, intrinsics, np.array([True, False])
+    )
+    assert not (empty.sum(axis=2) > 0).any()

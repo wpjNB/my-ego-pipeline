@@ -150,3 +150,73 @@ def test_both_hands_and_stacking() -> None:
     labels = scores_to_handedness(np.array([[0.1, 0.9], [0.8, 0.2]]))
     assert labels.tolist() == [1, 0]
     assert enforce_side_consistency(np.array([1, 1, 0, 1]), min_frames=2).tolist() == [1, 1, 1, 1]
+
+
+def test_swapped_labels_at_a_crossing_do_not_switch_sides() -> None:
+    """Two hands cross; the classifier's labels swap mid-way.
+
+    A label-only tracker jumps to the other hand at the crossing (observed on
+    hot3d_ep000 frame ~240, each slot holding the other hand). Continuity must
+    keep each side on its own physical hand.
+    """
+    total = 12
+    frames = empty_frames(total)
+    # Left hand glides right (width 30, step 5), right hand glides left; the
+    # classifier's labels swap across the crossing (frames 7..10).
+    for t in range(total):
+        left_box = (5.0 * t, 0.0, 5.0 * t + 30.0, 10.0)
+        right_box = (90.0 - 5.0 * t, 20.0, 120.0 - 5.0 * t, 30.0)
+        swap = 7 <= t <= 10
+        frames[t].append(detection(t, left_box, 0.9, RIGHT if swap else LEFT))
+        frames[t].append(detection(t, right_box, 0.9, LEFT if swap else RIGHT))
+
+    left = conservative_track(frames, side=LEFT, min_confidence=0.75)
+    right = conservative_track(frames, side=RIGHT, min_confidence=0.75)
+
+    for t in range(total):
+        expected_left = np.array([5.0 * t, 0.0, 5.0 * t + 30.0, 10.0])
+        expected_right = np.array([90.0 - 5.0 * t, 20.0, 120.0 - 5.0 * t, 30.0])
+        assert left.valid[t], f"left lost at {t}"
+        assert np.allclose(left.boxes[t], expected_left), f"left jumped at frame {t}"
+        assert right.valid[t], f"right lost at {t}"
+        assert np.allclose(right.boxes[t], expected_right), f"right jumped at frame {t}"
+
+
+def test_continuity_prefers_an_overlapping_flip_over_a_far_label_match() -> None:
+    """A flipped-label box that continues the motion beats a same-label box
+    that does not; a far-away box never hijacks the track."""
+    frames = empty_frames(6)
+    for t in range(3):
+        frames[t].append(detection(t, (10 * t, 0, 10 * t + 10, 10), 0.9, LEFT))
+    # Frame 5 after a 2-frame gap: the left hand reappears overlapping its old
+    # spot but labelled RIGHT; a LEFT-labelled detection sits far away.
+    frames[5].append(detection(5, (200, 0, 210, 10), 0.9, LEFT))
+    frames[5].append(detection(5, (25, 0, 35, 10), 0.9, RIGHT))
+    track = conservative_track(frames, side=LEFT, min_confidence=0.75)
+    assert track.valid[5]
+    assert np.allclose(track.boxes[5], (25.0, 0.0, 35.0, 10.0))
+
+    # And with only a far, non-overlapping candidate, nothing is adopted.
+    frames2 = empty_frames(6)
+    for t in range(3):
+        frames2[t].append(detection(t, (10 * t, 0, 10 * t + 10, 10), 0.9, LEFT))
+    frames2[5].append(detection(5, (200, 0, 210, 10), 0.9, RIGHT))
+    track2 = conservative_track(frames2, side=LEFT, min_confidence=0.75)
+    assert not track2.valid[5]
+
+
+def test_single_visible_hand_is_not_tracked_by_both_sides() -> None:
+    """One hand in frame: only its own side may track it.
+
+    Without slot mutual exclusion the other side adopted the same box and the
+    backend reconstructed a phantom second hand from the same crop
+    (hot3d_ep003 frames 144-175).
+    """
+    frames = empty_frames(8)
+    for t in range(8):
+        # The left hand drifts; WiLoR labels it LEFT at confidence 0.83.
+        frames[t].append(detection(t, (10 * t, 5, 10 * t + 40, 45), 0.83, LEFT))
+    left = conservative_track(frames, side=LEFT, min_confidence=0.75)
+    right = conservative_track(frames, side=RIGHT, min_confidence=0.75)
+    assert left.valid.all()
+    assert not right.valid.any()

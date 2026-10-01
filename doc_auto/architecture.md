@@ -94,7 +94,7 @@ stand-in used for CPU-only runs and tests).
 | 3 camera | `camera/vggt_omega.py`, `camera/window.py` | `camera/windows/*.npz` | 416 px / 200 frames / 40 overlap |
 | 4 stitch | `camera/depth.py`, `camera/stitch.py`, `geometry/*` | `camera/stitched_camera.npz`, `stitched/sim3_transforms.npz` | depth-derived Sim(3) + linear blending |
 | 5 fusion | `fusion/trajectory.py` | `trajectory/trajectory_raw.npz` | `p_w = R_c2w p_c + t_c2w` |
-| 6 refine | `refinement/*` | `trajectory/trajectory.npz` | camera filter, bone scale, wrist depth |
+| 6 refine | `refinement/*` | `trajectory/trajectory.npz` | short-gap interpolation (P2), camera filter, bone scale, wrist depth |
 | 7 evaluate | `evaluation/*` | report | Action-MPJPE / Coverage / FPS |
 
 ## Batch execution (offline)
@@ -143,7 +143,12 @@ two stages can disagree about a path.
 
 * No wide-window Gaussian smoothing of hand trajectories
   (`refinement/__init__.py` documents why).
-* No pose interpolation for missing frames: `NaN` marks missing, everywhere.
+* No pose interpolation beyond `refinement/gap_fill.py`: missing runs of at
+  most `refinement.gap_fill_max_frames` (default 12) hand-frames between two
+  valid anchors are filled with the per-joint linear blend of the anchors and
+  marked in `hand_interpolated`; leading/trailing frames and longer holes stay
+  ``NaN``, and nothing is ever extrapolated. The evaluator reports the
+  predicted-only numbers next to the interpolated ones.
 * No `DROID-SLAM` / `Metric3D` in the HaWoR environment.
 
 ## World-0 gauge

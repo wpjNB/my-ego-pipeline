@@ -57,21 +57,30 @@ class EvaluationReport:
         )
 
     def format(self) -> str:
-        return "\n".join(
-            [
-                "===============================",
-                "HOT3D Evaluation",
-                "===============================",
-                f"Action MPJPE : {self.action_mpjpe_mm:.4f} mm",
-                f"Coverage     : {100.0 * self.coverage:.2f} %",
-                f"FPS          : {self.fps:.2f}",
-                "",
-                f"Camera error : {self.camera_error:.4f}",
-                f"Wrist error  : {self.wrist_error_mm:.4f}",
-                f"Depth error  : {self.depth_error_mm:.4f}",
-                "===============================",
+        lines = [
+            "===============================",
+            "HOT3D Evaluation",
+            "===============================",
+            f"Action MPJPE : {self.action_mpjpe_mm:.4f} mm",
+            f"Coverage     : {100.0 * self.coverage:.2f} %",
+        ]
+        if self.extra.get("coverage_interpolated", 0.0) > 0.0:
+            # Gap-filled frames are in the headline numbers; these lines show
+            # what the model itself predicted.
+            lines += [
+                f"Coverage(pred): {100.0 * self.extra.get('coverage_predicted_only', float('nan')):.2f} %"
+                f"  (gap-filled {100.0 * self.extra.get('coverage_interpolated', 0.0):.2f} %)",
+                f"MPJPE (pred) : {self.extra.get('action_mpjpe_predicted_only_mm', float('nan')):.4f} mm",
             ]
-        )
+        lines += [
+            f"FPS          : {self.fps:.2f}",
+            "",
+            f"Camera error : {self.camera_error:.4f}",
+            f"Wrist error  : {self.wrist_error_mm:.4f}",
+            f"Depth error  : {self.depth_error_mm:.4f}",
+            "===============================",
+        ]
+        return "\n".join(lines)
 
     def as_dict(self) -> dict[str, float]:
         payload = {

@@ -53,18 +53,28 @@ preprocess:
 
 detection:
   detector_confidence: 0.1
+  # min_confidence gates ANCHORS and stays at the 0.75 spec: WiLoR's 0.5-0.75
+  # band on this lens is full of forearm / frame-edge fragments, and anchoring
+  # them reconstructed phantom hands after the real hand left the view
+  # (hot3d_ep003 windows 144-175). The relaxed max_gap 8 + continuity tracker
+  # keep the coverage; the low band only feeds IoU-gated gap recovery.
   # Tracker thresholds relaxed below the reference profile's 0.75/4, measured
   # on hot3d_ep000 (2026-09-29, doc_auto/ablation.md): hand coverage
   # 54.8 % -> 78.1 % (left detection 22.7 % -> 58.7 %), wrist error improves
   # slightly, MPJPE stays ~flat (+2.2 mm - the recovered frames are the hard
   # ones). Continuity is worth more than the metric delta on this host.
-  min_confidence: 0.5
+  min_confidence: 0.75
   max_gap: 8
   iou_threshold: 0.20
 
 hand:
   window: 16
   overlap: 8
+  # One [1,2,1] pass over the blended camera-space hands damps the white
+  # reconstruction noise (wrist step 17-20 -> 11 mm/frame). The remaining
+  # wobble is HaWoR's own mid-frequency oscillation (~2 deg/frame), which more
+  # passes cannot touch without smearing real motion - measured 2026-09-30.
+  smooth_passes: 1
   batch_size: 4
 
 camera:
@@ -75,6 +85,10 @@ camera:
   # with idle cards; the ablation table must note which window was used.
   window: 8
   overlap: 4
+  # Measured resident memory at these windows: 8.5 GiB. The batch scheduler's
+  # default camera floor (16 GB) describes the reference 200/40 windows; this
+  # profile declares what it actually needs so dispatch matches honestly.
+  min_gpu_memory_gb: 12.0
   checkpoint: VGGT-Omega-1B-416-Reproduction   # file: vggt_omega_1b_416_reproduce.pt
   use_depth_confidence: true
 
@@ -91,7 +105,7 @@ stitch:
 refinement:
   camera_filter_passes: 1
   bone_scale_max_correction: 0.035
-  bone_scale_reference: median
+  bone_scale_reference: mean  # the reference recipe (blog ablation: mean wins, median regressed)
   wrist_depth_lambda: 0.2
   wrist_depth_max_change: null
 

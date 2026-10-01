@@ -522,6 +522,7 @@ def to_camera_space(
     valid: object,
     pred_valid: object,
     confidence: object,
+    vertices: object | None = None,
 ) -> dict[str, np.ndarray]:
     """World landmarks + per-frame w2c pose -> the clip's camera-space contract.
 
@@ -530,7 +531,8 @@ def to_camera_space(
     the two validity sources are "the tracker saw this hand" (``valid``,
     ``(T, 2)``) and "the infiller trusted this hand" (``pred_valid``, ``(2, T)``).
     Frames that fail either test stay ``NaN`` - this project never fabricates a
-    missing 3D pose.
+    missing 3D pose. ``vertices`` (``(T, 2, V, 3)``, optional) takes the same
+    transform so the debug video can draw the MANO mesh.
     """
     rotation = np.asarray(r_w2c, dtype=np.float64)
     translation = np.asarray(t_w2c, dtype=np.float64)
@@ -550,11 +552,24 @@ def to_camera_space(
     )
     hand_valid = np.asarray(pred_valid, dtype=np.float64).T > 0.5
     all_valid = hand_valid & np.asarray(valid, dtype=bool)
-    return {
+    result = {
         "joints_camera": np.where(all_valid[:, :, None, None], camera_space, np.nan),
         "valid": all_valid,
         "confidence": np.where(all_valid, np.asarray(confidence, dtype=np.float64), 0.0),
     }
+    if vertices is not None:
+        verts = np.asarray(vertices, dtype=np.float64)
+        if verts.shape[:2] != joints.shape[:2] or verts.shape[3] != 3:
+            raise ValueError(
+                f"vertices must be [{joints.shape[0]}, 2, V, 3], got {verts.shape}"
+            )
+        camera_vertices = (
+            np.einsum("tji,tvni->tvni", rotation, verts) + translation[:, None, None, :]
+        )
+        result["vertices_camera"] = np.where(
+            all_valid[:, :, None, None], camera_vertices, np.nan
+        ).astype(np.float32)
+    return result
 
 
 def run_model(args: argparse.Namespace) -> dict[str, np.ndarray]:
@@ -649,23 +664,34 @@ def run_model(args: argparse.Namespace) -> dict[str, np.ndarray]:
             hawor_args, start_idx, end_idx, frame_chunks_all
         )
 
-        # 3. MANO landmarks, then back to camera space
+        # 3. MANO landmarks + mesh vertices, then back to camera space
         torch.set_grad_enabled(False)
         # Frame-major (T, hand, joint, xyz): the trajectory contract, the validity
         # mask and every consumer are frame-major. An earlier revision filled a
         # (hand, T, joint, xyz) array here, which cannot reach the einsum below.
         landmarks = np.zeros((end_idx, 2, 21, 3), dtype=np.float64)
+        vertices = np.zeros((end_idx, 2, 778, 3), dtype=np.float64)
         for hand, run in ((0, run_mano_left), (1, run_mano)):
             sl = slice(hand, hand + 1)
             mano = run(pred_trans[sl], pred_rot[sl], pred_hand_pose[sl], betas=pred_betas[sl])
             joints = mano["joints"] if isinstance(mano, dict) else mano
             joints = np.asarray(getattr(joints, "cpu", lambda: joints)())
             landmarks[:, hand] = np.asarray(joints, dtype=np.float64).reshape(end_idx, 21, 3)
+            verts = mano.get("vertices") if isinstance(mano, dict) else None
+            if verts is not None:
+                verts = np.asarray(getattr(verts, "cpu", lambda: verts)())
+                vertices[:, hand] = verts.reshape(end_idx, -1, 3)
     finally:
         os.chdir(previous_cwd)
 
     return to_camera_space(
-        r_w2c, t_w2c, landmarks, valid=valid, pred_valid=pred_valid, confidence=confidence
+        r_w2c,
+        t_w2c,
+        landmarks,
+        valid=valid,
+        pred_valid=pred_valid,
+        confidence=confidence,
+        vertices=vertices,
     )
 
 
@@ -768,6 +794,7 @@ def main(argv: list[str] | None = None) -> int:
             window=args.window,
             overlap=args.overlap,
             selection=selection,
+            vertices_camera=result.get("vertices_camera"),
         )
         record_partition(
             out_dir, stage="hand", ranges=chosen, params=params, selection=selection

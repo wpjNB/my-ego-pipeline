@@ -40,6 +40,7 @@ class HandWindow:
     confidence: Array | None = None  # [n, 2]
     root_rot: Array | None = None  # [n, 2, 3, 3]
     betas: Array | None = None  # [n, 2, 10]
+    vertices_camera: Array | None = None  # [n, 2, V, 3] (V = 778 for MANO)
 
     def __post_init__(self) -> None:
         joints = np.asarray(self.joints_camera, dtype=np.float64)
@@ -67,6 +68,14 @@ class HandWindow:
             if betas.shape != (joints.shape[0], NUM_HANDS, 10):
                 raise StageIOError(f"betas must have shape [{joints.shape[0]}, 2, 10], got {betas.shape}")
             object.__setattr__(self, "betas", betas)
+        if self.vertices_camera is not None:
+            verts = np.asarray(self.vertices_camera, dtype=np.float64)
+            if verts.ndim != 4 or verts.shape[:2] != joints.shape[:2] or verts.shape[3] != 3:
+                raise StageIOError(
+                    "vertices_camera must have shape [n, 2, V, 3] with n, 2 matching "
+                    f"joints_camera, got {verts.shape}"
+                )
+            object.__setattr__(self, "vertices_camera", verts)
         object.__setattr__(self, "joints_camera", joints)
         object.__setattr__(self, "valid", valid)
         object.__setattr__(self, "start", int(self.start))
@@ -94,6 +103,7 @@ class HandBlendResult:
     root_rot: Array  # [T, 2, 3, 3] (identity where unavailable)
     weight: Array  # [T, 2] number of windows that contributed
     has_root_rot: bool
+    vertices_camera: Array | None = None  # [T, 2, V, 3] when the windows carry meshes
 
 
 def blend_hand_windows(windows: list[HandWindow] | tuple[HandWindow, ...]) -> HandBlendResult:
@@ -124,6 +134,15 @@ def blend_hand_windows(windows: list[HandWindow] | tuple[HandWindow, ...]) -> Ha
     has_root_rot = any(w.root_rot is not None for w in ordered)
     root_rot = np.broadcast_to(np.eye(3, dtype=np.float64), (total, NUM_HANDS, 3, 3)).copy()
     rot_weight = np.zeros((total, NUM_HANDS), dtype=np.float64)
+    has_vertices = any(w.vertices_camera is not None for w in ordered)
+    vertices: Array | None = None
+    vertex_weight: Array | None = None
+    if has_vertices:
+        num_verts = int(
+            next(w.vertices_camera.shape[2] for w in ordered if w.vertices_camera is not None)
+        )
+        vertices = np.zeros((total, NUM_HANDS, num_verts, 3), dtype=np.float32)
+        vertex_weight = np.zeros((total, NUM_HANDS), dtype=np.float64)
 
     for index, window in enumerate(ordered):
         alpha = (
@@ -143,6 +162,11 @@ def blend_hand_windows(windows: list[HandWindow] | tuple[HandWindow, ...]) -> Ha
                     )
 
                 new_joints = window.joints_camera[local, hand]
+                if not np.isfinite(new_joints).all():
+                    # A window can mark a frame valid while its model output
+                    # collapsed to NaN (e.g. a broken focal length upstream):
+                    # such a frame must stay missing, never poison the blend.
+                    continue
                 if weight[frame, hand] <= 0.0:
                     joints[frame, hand] = new_joints
                     weight[frame, hand] = 1.0
@@ -153,6 +177,23 @@ def blend_hand_windows(windows: list[HandWindow] | tuple[HandWindow, ...]) -> Ha
                 else:
                     joints[frame, hand] = (1.0 - a) * joints[frame, hand] + a * new_joints
                     weight[frame, hand] += 1.0
+
+                new_vertices = (
+                    None
+                    if window.vertices_camera is None
+                    else window.vertices_camera[local, hand]
+                )
+                if vertices is not None and new_vertices is not None:
+                    assert vertex_weight is not None  # for the type checker
+                    if vertex_weight[frame, hand] <= 0.0:
+                        vertices[frame, hand] = new_vertices
+                        vertex_weight[frame, hand] = 1.0
+                    elif a > 0.0:
+                        vertices[frame, hand] = (
+                            (1.0 - a) * vertices[frame, hand].astype(np.float64)
+                            + a * new_vertices
+                        )
+                        vertex_weight[frame, hand] += 1.0
 
                 if window.root_rot is not None:
                     candidate = window.root_rot[local, hand]
@@ -181,6 +222,7 @@ def blend_hand_windows(windows: list[HandWindow] | tuple[HandWindow, ...]) -> Ha
         root_rot=root_rot,
         weight=weight,
         has_root_rot=has_root_rot,
+        vertices_camera=vertices,
     )
 
 
@@ -210,3 +252,67 @@ def overlap_alpha(index: int, count: int) -> float:
     if count == 1:
         return 1.0
     return index / (count - 1)
+
+
+def smooth_hand_trajectory(
+    joints_camera: Array,
+    valid: Array,
+    *,
+    vertices_camera: Array | None = None,
+    passes: int = 1,
+) -> tuple[Array, Array | None]:
+    """Binomial [1, 2, 1] / 4 smoothing along time, per hand, within valid runs.
+
+    The blended trajectory inherits the independent reconstruction noise of
+    every overlapping HaWoR window (~8 mm high-frequency wrist residual on the
+    real clips), which the mesh overlay makes visible as rapid wobble. This
+    damps that noise while leaving real motion (17-20 mm/frame) mostly intact:
+    one pass is a 3-tap filter, applied only where the frame, its predecessor
+    and its successor are all valid, so gaps never bleed across and the run
+    edges keep their original values. Vertices, when given, are smoothed with
+    the same taps so the mesh stays consistent with the joints.
+
+    Returns ``(joints, vertices)`` with the same shapes; ``vertices`` is None
+    when no vertices were passed.
+    """
+    if passes < 0:
+        raise StageIOError(f"smooth passes must be >= 0, got {passes}")
+    joints = np.asarray(joints_camera, dtype=np.float64)
+    verts = None if vertices_camera is None else np.asarray(vertices_camera, dtype=np.float64)
+    for _ in range(passes):
+        for hand in range(joints.shape[1]):
+            for start, stop in _valid_runs(valid[:, hand]):
+                if stop - start < 3:
+                    continue
+                # Read from a snapshot so the filter stays symmetric (an
+                # in-place update would make it directional).
+                joints_src = joints[start:stop, hand].copy()
+                verts_src = None if verts is None else verts[start:stop, hand].copy()
+                for local in range(1, stop - start - 1):
+                    trio = joints_src[local - 1 : local + 2]
+                    if np.isfinite(trio).all():
+                        joints[start + local, hand] = (
+                            0.25 * trio[0] + 0.5 * trio[1] + 0.25 * trio[2]
+                        )
+                    if verts_src is not None:
+                        trio_v = verts_src[local - 1 : local + 2]
+                        if np.isfinite(trio_v).all():
+                            verts[start + local, hand] = (
+                                0.25 * trio_v[0] + 0.5 * trio_v[1] + 0.25 * trio_v[2]
+                            )
+    return joints, verts
+
+
+def _valid_runs(mask: Array) -> list[tuple[int, int]]:
+    """Maximal ``[start, stop)`` runs of True in a boolean vector."""
+    runs: list[tuple[int, int]] = []
+    start = None
+    for index, flag in enumerate(np.asarray(mask, dtype=bool)):
+        if flag and start is None:
+            start = index
+        elif not flag and start is not None:
+            runs.append((start, index))
+            start = None
+    if start is not None:
+        runs.append((start, len(mask)))
+    return runs

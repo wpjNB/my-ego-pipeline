@@ -1,0 +1,65 @@
+# aius-01 host declarations: one entry per Tesla P100 so three clips (or
+# window shards) run concurrently without contending for one card.
+#
+# `device: auto` in the stage configs always resolves to cuda:0, so each host
+# pins its physical GPU through CUDA_VISIBLE_DEVICES instead - inside that
+# process, cuda:0 IS the pinned card. Everything runs on this one machine
+# (executor: local, shared filesystem); only the env is split per entry.
+#
+#   python scripts/run_batch.py --manifest configs/clips.hot3d_bench.yaml \
+#       --config configs/hot3d_p100.yaml --hosts configs/hosts.p100x3.yaml \
+#       --max-parallel 3 --skip-existing
+hosts:
+  - name: p100-0
+    executor: local
+    backends: ["wilor", "hawor", "vggt"]
+    python:
+      wilor: ["/home/pjwang/miniforge3/envs/ego3d/bin/python"]
+      hawor: ["/home/pjwang/miniforge3/envs/ego3d/bin/python"]
+      vggt: ["/home/pjwang/miniforge3/envs/ego3d/bin/python"]
+    cuda: "12.6"
+    gpu_count: 1
+    gpu_memory_gb: 12.0
+    data_root: data
+    repo_root: .
+    orchestrator_python: ["/home/pjwang/miniforge3/envs/ego3d_base/bin/python"]
+    max_parallel: 1
+    extra_env:
+      CUDA_VISIBLE_DEVICES: "0"
+    notes: "physical GPU 0"
+
+  - name: p100-1
+    executor: local
+    backends: ["wilor", "hawor", "vggt"]
+    python:
+      wilor: ["/home/pjwang/miniforge3/envs/ego3d/bin/python"]
+      hawor: ["/home/pjwang/miniforge3/envs/ego3d/bin/python"]
+      vggt: ["/home/pjwang/miniforge3/envs/ego3d/bin/python"]
+    cuda: "12.6"
+    gpu_count: 1
+    gpu_memory_gb: 12.0
+    data_root: data
+    repo_root: .
+    orchestrator_python: ["/home/pjwang/miniforge3/envs/ego3d_base/bin/python"]
+    max_parallel: 1
+    extra_env:
+      CUDA_VISIBLE_DEVICES: "1"
+    notes: "physical GPU 1"
+
+  - name: p100-2
+    executor: local
+    backends: ["wilor", "hawor", "vggt"]
+    python:
+      wilor: ["/home/pjwang/miniforge3/envs/ego3d/bin/python"]
+      hawor: ["/home/pjwang/miniforge3/envs/ego3d/bin/python"]
+      vggt: ["/home/pjwang/miniforge3/envs/ego3d/bin/python"]
+    cuda: "12.6"
+    gpu_count: 1
+    gpu_memory_gb: 12.0
+    data_root: data
+    repo_root: .
+    orchestrator_python: ["/home/pjwang/miniforge3/envs/ego3d_base/bin/python"]
+    max_parallel: 1
+    extra_env:
+      CUDA_VISIBLE_DEVICES: "2"
+    notes: "physical GPU 2"

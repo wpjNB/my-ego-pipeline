@@ -1,0 +1,679 @@
+{
+  "clips": [
+    {
+      "clip": "P0001_10a27bf7_c000000",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000001",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000002",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000003",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000004",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000005",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000006",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000007",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000008",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000009",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000010",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000011",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000012",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000013",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000014",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000015",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000016",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000017",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000018",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000019",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000020",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000021",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000022",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000023",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000024",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000025",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000026",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000027",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000028",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000029",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000030",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000031",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000032",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000033",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000034",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000035",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000036",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000037",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000038",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000039",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000040",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000041",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000042",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000043",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000044",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0001_10a27bf7_c000045",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000000",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000001",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000002",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000003",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000004",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000005",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000006",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000007",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000008",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000009",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000010",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000011",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000012",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000013",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000014",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000015",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000016",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000017",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000018",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000019",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000020",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000021",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000022",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000023",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000024",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000025",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000026",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000027",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000028",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000029",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000030",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000031",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000032",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000033",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000034",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000035",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000036",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000037",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000038",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000039",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000040",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000041",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000042",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000043",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000000",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000001",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000002",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000003",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000004",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000005",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000006",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000007",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000008",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000009",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000010",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000011",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000012",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000013",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000014",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000015",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000016",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000017",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000018",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000019",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000020",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000021",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000022",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000023",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000024",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000025",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000026",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000027",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000028",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000029",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000030",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000031",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000032",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000033",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000034",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000035",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000036",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000037",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000038",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000039",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000040",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000041",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000042",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000043",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0015_e7458eb3_c000044",
+      "from_stage": "detection",
+      "num_frames": 81
+    }
+  ]
+}

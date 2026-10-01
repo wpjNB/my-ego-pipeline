@@ -75,6 +75,7 @@ def make_valid_arrays(total: int = 6) -> dict[str, np.ndarray]:
         "hand_xyz_camera": np.zeros((total, 2, 21, 3)),
         "hand_valid": np.ones((total, 2), dtype=bool),
         "hand_confidence": np.ones((total, 2)),
+        "hand_interpolated": np.zeros((total, 2), dtype=bool),
         "camera_R_c2w": np.broadcast_to(np.eye(3), (total, 3, 3)).copy(),
         "camera_t_c2w": np.zeros((total, 3)),
         "camera_K": np.broadcast_to(np.eye(3), (total, 3, 3)).copy(),

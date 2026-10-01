@@ -45,12 +45,12 @@ def _bone_index_pairs() -> tuple[Array, Array]:
     return parents, children
 
 
-def clip_mean_bone_lengths(joints: Array, valid: Array, *, reference: str = "median") -> Array:
+def clip_mean_bone_lengths(joints: Array, valid: Array, *, reference: str = "mean") -> Array:
     """Clip-level reference bone lengths ``[2, 20]``.
 
-    ``reference='median'`` is the default because a few mis-reconstructed
-    frames should not drag the reference, while the spec's "clip-level mean" is
-    available with ``reference='mean'``.
+    ``reference='mean'`` is the recipe default (the reference ablation measured
+    mean better and median regressing); ``'median'`` is kept for robustness
+    experiments - our two hot3d episodes split the verdict within noise.
     """
     arr = np.asarray(joints, dtype=np.float64)
     mask = np.asarray(valid, dtype=bool)

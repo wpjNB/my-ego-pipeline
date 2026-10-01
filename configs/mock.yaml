@@ -57,7 +57,7 @@ stitch:
 refinement:
   camera_filter_passes: 1
   bone_scale_max_correction: 0.035
-  bone_scale_reference: median
+  bone_scale_reference: mean  # the reference recipe (blog ablation: mean wins, median regressed)
   wrist_depth_lambda: 0.2
   wrist_depth_max_change: null
 

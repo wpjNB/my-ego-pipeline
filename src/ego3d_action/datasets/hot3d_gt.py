@@ -184,6 +184,7 @@ def convert_episode(
         ),
         "hand_valid": valid,
         "hand_confidence": confidence,
+        "hand_interpolated": np.zeros(valid.shape, dtype=bool),
         "camera_R_c2w": rotation_c2w,
         "camera_t_c2w": translation_c2w,
         "camera_K": intrinsics,

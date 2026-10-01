@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
@@ -13,7 +14,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from ego3d_action.cli import base_parser, build_context, fail  # noqa: E402
 from ego3d_action.errors import Ego3DActionError  # noqa: E402
 from ego3d_action.hand import hawor  # noqa: E402
-from ego3d_action.hand.temporal_blend import blend_hand_windows  # noqa: E402
+from ego3d_action.hand.temporal_blend import (  # noqa: E402
+    blend_hand_windows,
+    smooth_hand_trajectory,
+)
 from ego3d_action.io.artefacts import clip_metadata, load_detection, save_hand  # noqa: E402
 from ego3d_action.io.frames import load_frame_set  # noqa: E402
 from ego3d_action.runtime.sharding import (  # noqa: E402
@@ -24,6 +28,8 @@ from ego3d_action.runtime.sharding import (  # noqa: E402
 )
 from ego3d_action.runtime.subprocess_backend import BackendInvocation  # noqa: E402
 from ego3d_action.visualization.overlay import write_hand_video  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -155,15 +161,31 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         blended = blend_hand_windows(windows)
+        # Damp the per-window reconstruction noise (rapid mesh wobble on the
+        # real clips) before the artefact is written; see
+        # temporal_blend.smooth_hand_trajectory. 0 disables.
+        # Reference recipe: NO hand-joint smoothing (the blog measured every
+# variant regressing at its quality level). The host configs opt in.
+        smooth_passes = int(context.config.get("hand.smooth_passes", 0))
+        joints_smooth, verts_smooth = smooth_hand_trajectory(
+            blended.joints_camera,
+            blended.valid,
+            vertices_camera=blended.vertices_camera,
+            passes=smooth_passes,
+        )
+        hand_arrays = {
+            "joints_camera": joints_smooth,
+            "joints_camera": blended.joints_camera,
+            "valid": blended.valid,
+            "confidence": blended.confidence,
+            "root_rot": blended.root_rot,
+            "betas": np.zeros((blended.joints_camera.shape[0], 2, 10)),
+        }
+        if verts_smooth is not None:
+            hand_arrays["vertices_camera"] = verts_smooth
         save_hand(
             layout,
-            {
-                "joints_camera": blended.joints_camera,
-                "valid": blended.valid,
-                "confidence": blended.confidence,
-                "root_rot": blended.root_rot,
-                "betas": np.zeros((blended.joints_camera.shape[0], 2, 10)),
-            },
+            hand_arrays,
             metadata={
                 "stage": "phase2_hand",
                 "backend_mode": invocation.mode,
@@ -182,6 +204,7 @@ def main(argv: list[str] | None = None) -> int:
             intrinsics = np.broadcast_to(
                 _camera_intrinsics(layout), (blended.joints_camera.shape[0], 3, 3)
             ).copy()
+            faces = None if blended.vertices_camera is None else _mano_faces(context)
             write_hand_video(
                 frames.paths,
                 blended.joints_camera,
@@ -189,11 +212,22 @@ def main(argv: list[str] | None = None) -> int:
                 blended.valid,
                 layout.visualization_dir / "02_hawor.mp4",
                 fps=float(context.config.get("visualization.fps") or frames.fps),
+                vertices_camera=blended.vertices_camera,
+                faces=faces,
             )
             print(f"wrote {layout.visualization_dir / '02_hawor.mp4'}")
         return 0
     except Ego3DActionError as exc:
         return fail(str(exc))
+
+
+def _mano_faces(context) -> list[np.ndarray]:
+    """MANO triangle indices per hand (left winding mirrored) for mesh drawing."""
+    from ego3d_action.hand.mano_model import load_mano_models
+
+    models = load_mano_models(context.path("paths.mano_model"))
+    right = np.asarray(models["right"].faces, dtype=np.int64)
+    return [np.asarray(models["left"].faces, dtype=np.int64), right]
 
 
 def _camera_intrinsics(layout) -> np.ndarray:
@@ -248,13 +282,25 @@ def resolve_focal(layout, config) -> tuple[float | None, str]:
         scaled = scale_intrinsics(
             np.asarray(data["intrinsics"])[0], source_size=source, target_size=(width, height)
         )
-        return float(scaled[0, 0]), "Phase 3 camera windows"
+        candidate = float(scaled[0, 0])
+        if not np.isfinite(candidate) or candidate <= 0.0:
+            continue
+        return candidate, "Phase 3 camera windows"
 
     reference = layout.trajectory_dir / "ground_truth.npz"
     if reference.is_file():
         data = load_npz(reference, required=("camera_K",))
         intrinsics = np.asarray(data["camera_K"], dtype=np.float64)
-        return float(np.median(intrinsics[:, 0, 0])), "reference camera_K"
+        candidate = float(np.median(intrinsics[:, 0, 0]))
+        if not np.isfinite(candidate) or candidate <= 0.0:
+            # A reference without intrinsics (NaN camera_K) is not an answer:
+            # falling through would hand HaWoR a NaN focal and poison every
+            # window it writes. The caller warns and HaWoR uses its default.
+            logger.warning(
+                "reference camera_K holds no finite focal length; ignoring it"
+            )
+            return None, "unavailable"
+        return candidate, "reference camera_K"
     return None, "unavailable"
 
 

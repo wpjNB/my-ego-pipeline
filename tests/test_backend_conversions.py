@@ -527,6 +527,42 @@ def test_hawor_to_camera_space_uses_the_contract_layout() -> None:
         )
 
 
+def test_hawor_to_camera_space_transforms_vertices_like_joints() -> None:
+    """Mesh vertices ride the same w2c transform and validity mask as joints."""
+    import numpy as np
+
+    runner = load_script("hawor_runner_mod12", "backends/hawor_runner.py")
+    total = 2
+    r_w2c = np.broadcast_to(np.eye(3), (total, 3, 3)).copy()
+    t_w2c = np.zeros((total, 3))
+    landmarks = np.zeros((total, 2, 21, 3))
+    vertices = np.zeros((total, 2, 5, 3))
+    vertices[..., 2] = 0.5
+    valid = np.ones((total, 2), dtype=bool)
+    valid[1, 1] = False
+    pred_valid = np.ones((2, total))
+    confidence = np.full((total, 2), 0.8)
+
+    result = runner.to_camera_space(
+        r_w2c, t_w2c, landmarks,
+        valid=valid, pred_valid=pred_valid, confidence=confidence,
+        vertices=vertices,
+    )
+    verts = result["vertices_camera"]
+    assert verts.shape == (total, 2, 5, 3)
+    assert verts.dtype == np.float32
+    assert np.allclose(verts[0, 0, :, 2], 0.5)  # same transform as the joints
+    assert np.isnan(verts[1, 1]).all()  # invalid hand -> no mesh either
+    assert np.isfinite(verts[1, 0]).all()
+
+    with pytest.raises(ValueError, match="vertices must be"):
+        runner.to_camera_space(
+            r_w2c, t_w2c, landmarks,
+            valid=valid, pred_valid=pred_valid, confidence=confidence,
+            vertices=vertices[:-1],  # one frame short of the joints
+        )
+
+
 def test_hawor_absolutizes_paths_before_chdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """HaWoR chdirs into its checkout; relative paths must not follow it there.
 

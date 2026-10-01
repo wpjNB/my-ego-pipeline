@@ -115,15 +115,25 @@ def test_final_trajectory_satisfies_the_contract(pipeline_run: Path) -> None:
     assert metadata["camera_convention"] == "c2w"
 
 
-def test_missing_frames_stay_missing(pipeline_run: Path) -> None:
-    data = load_npz(pipeline_run / "clip01" / "trajectory" / "trajectory.npz")
+def test_missing_frames_are_filled_only_when_marked(pipeline_run: Path) -> None:
+    """P2 policy: short holes are interpolated and marked; nothing else appears."""
+    trajectory = pipeline_run / "clip01" / "trajectory"
+    raw = load_npz(trajectory / "trajectory_raw.npz")
+    data = load_npz(trajectory / "trajectory.npz")
+    raw_valid = np.asarray(raw["hand_valid"], dtype=bool)
     valid = data["hand_valid"]
+    interpolated = data["hand_interpolated"]
     assert valid.shape == (NUM_FRAMES, 2)
-    # The conservative tracker must not have invented the 10-frame hole.
-    assert not valid[33:40, 1].any()
-    # ... and every valid frame must carry finite world joints.
+    # The conservative tracker leaves the planted 10-frame hole missing...
+    assert not raw_valid[30:40, 1].any()
+    # ... refinement's gap fill interpolates it (10 <= max_gap 12) ...
+    assert interpolated[30:40, 1].all()
+    # ... and every frame the pipeline invented is exactly a marked one.
+    assert np.array_equal(valid & ~raw_valid, interpolated)
+    assert not (interpolated & raw_valid).any()
+    # Filled frames carry finite world joints; the rest stay missing.
     world = data["hand_xyz_world"]
-    assert np.isfinite(world[valid]).all()
+    assert np.isfinite(world[interpolated]).all()
     assert np.isnan(world[~valid]).all()
 
 

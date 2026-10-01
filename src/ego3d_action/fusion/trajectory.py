@@ -113,6 +113,8 @@ def build_trajectory(
         "hand_xyz_camera": joints,
         "hand_valid": valid,
         "hand_confidence": confidence,
+        # Fusion never invents poses; refinement's gap fill sets this mask.
+        "hand_interpolated": np.zeros((num_frames, 2), dtype=bool),
         "camera_R_c2w": np.asarray(camera_rotation_c2w, dtype=np.float64),
         "camera_t_c2w": np.asarray(camera_translation_c2w, dtype=np.float64),
         "camera_K": np.asarray(camera_intrinsics, dtype=np.float64),

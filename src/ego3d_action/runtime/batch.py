@@ -568,6 +568,46 @@ class BatchRunner:
         self.repo_root = repo_root
         self._lock = threading.Lock()
         self._results: list[UnitResult] = []
+        self._config_cache: dict[str, Any] | None = None
+        # Per-host slot accounting: a host's ``max_parallel`` is a hard cap on
+        # concurrently running units, so three pinned GPUs stay three processes
+        # on three cards instead of three processes on one card.
+        self._host_occupancy = {host.name: 0 for host in self.hosts}
+        self._host_slots = threading.Condition(self._lock)
+        self._tls = threading.local()
+
+    def _config(self) -> dict[str, Any]:
+        """The stage config, loaded once (requirement overrides come from here)."""
+        if self._config_cache is None:
+            path = Path(self.config_path)
+            self._config_cache = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        return self._config_cache
+
+    @staticmethod
+    def _config_lookup(config: Mapping[str, Any], key: str) -> Any:
+        """Dotted-path lookup into the nested config mapping (None when absent)."""
+        node: Any = config
+        for part in key.split("."):
+            if not isinstance(node, Mapping) or part not in node:
+                return None
+            node = node[part]
+        return node
+
+    def _stage_requirements(self, stage: str) -> dict[str, Any]:
+        """Stage requirements, with the config's per-stage VRAM floor applied.
+
+        The defaults in :data:`STAGE_REQUIREMENTS` describe the reference
+        hardware (VGGT-Omega at 200-frame windows wants >= 16 GB). A profile
+        that runs smaller windows on smaller cards (e.g. 8/4 on a 12 GB P100,
+        measured at 8.5 GiB resident) declares that through
+        ``<stage>.min_gpu_memory_gb`` so the scheduler matches it honestly
+        instead of rejecting every unit.
+        """
+        required = dict(STAGE_REQUIREMENTS.get(stage, {}))
+        override = self._config_lookup(self._config(), f"{stage}.min_gpu_memory_gb")
+        if override is not None:
+            required["min_gpu_memory_gb"] = float(override)
+        return required
 
     # -- reporting -------------------------------------------------------
     @property
@@ -616,8 +656,49 @@ class BatchRunner:
         with self._lock:
             self._results.append(result)
 
+    def _acquire_host(self, unit: UnitSpec) -> HostCapabilities:
+        """Reserve a capable host with a free slot, blocking until one frees up.
+
+        :func:`select_host` is capability-only; the per-host ``max_parallel``
+        is enforced here, deterministically (highest capacity, then name).
+        """
+        required = self._stage_requirements(unit.stage)
+        while True:
+            with self._host_slots:
+                reasons = {
+                    host.name: host.explain_shortfall(required) or "" for host in self.hosts
+                }
+                candidates = [host for host in self.hosts if not reasons[host.name]]
+                if not candidates:
+                    raise CapabilityMismatch(
+                        required, {name: why for name, why in reasons.items() if why}
+                    )
+                free = [
+                    host
+                    for host in candidates
+                    if self._host_occupancy[host.name] < host.max_parallel
+                ]
+                if free:
+                    free.sort(key=lambda host: (-host.max_parallel, host.name))
+                    host = free[0]
+                    self._host_occupancy[host.name] += 1
+                    self._tls.host_name = host.name
+                    return host
+                self._host_slots.wait(timeout=5.0)
+
+    def _release_host(self) -> None:
+        """Free the slot this thread's unit holds (no-op when none was acquired)."""
+        name = getattr(self._tls, "host_name", None)
+        if name is None:
+            return
+        with self._host_slots:
+            self._host_occupancy[name] -= 1
+            self._tls.host_name = None
+            self._host_slots.notify_all()
+
     def _resolve_host(self, unit: UnitSpec) -> HostCapabilities:
-        required = STAGE_REQUIREMENTS.get(unit.stage, {})
+        """Capability-only host pick (no slot accounting) - dry runs and tests."""
+        required = self._stage_requirements(unit.stage)
         return select_host(self.hosts, required)
 
     def _mark_degraded(self, clip: str, detail: str) -> None:
@@ -640,7 +721,10 @@ class BatchRunner:
 
     def run_unit(self, unit: UnitSpec, *, skip_existing: bool, dry_run: bool = False) -> UnitResult:
         """Run one unit and record it in the ledger (public entry point)."""
-        result = self._run_unit(unit, skip_existing=skip_existing, dry_run=dry_run)
+        try:
+            result = self._run_unit(unit, skip_existing=skip_existing, dry_run=dry_run)
+        finally:
+            self._release_host()
         self._record(result)
         return result
 
@@ -704,7 +788,7 @@ class BatchRunner:
             )
 
         try:
-            host = self._resolve_host(unit)
+            host = self._acquire_host(unit)
         except CapabilityMismatch as exc:
             return UnitResult(
                 unit=unit, status="failed", params_hash=digest, detail=str(exc)
