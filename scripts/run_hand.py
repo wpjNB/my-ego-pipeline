@@ -231,13 +231,25 @@ def _mano_faces(context) -> list[np.ndarray]:
 
 
 def _camera_intrinsics(layout) -> np.ndarray:
-    """Intrinsics for the debug overlay, scaled to the RGB frame size."""
+    """Intrinsics for the debug overlay, at the RGB frame resolution.
+
+    The calibrated reference K wins when it is finite (official HOT3D-Clips:
+    f=609 at 1408 while VGGT's estimate is 709, a 16 % stretch that pushed
+    off-centre hands off their boxes); WGGT windows are the fallback for
+    clips without a reference, then the synthetic default.
+    """
     from ego3d_action.camera.depth import scale_intrinsics
     from ego3d_action.io.serialization import load_npz
 
     metadata = clip_metadata(layout)
     width = int(metadata.get("width", 320))
     height = int(metadata.get("height", 240))
+    reference = layout.trajectory_dir / "ground_truth.npz"
+    if reference.is_file():
+        data = load_npz(reference, required=("camera_K",))
+        candidate = np.asarray(data["camera_K"], dtype=np.float64)
+        if np.isfinite(candidate).all():
+            return candidate[0]
     for path in sorted(layout.camera_windows_dir.glob("*.npz")):
         data = load_npz(path, required=("intrinsics", "depth"))
         depth = np.asarray(data["depth"])
@@ -251,7 +263,7 @@ def _camera_intrinsics(layout) -> np.ndarray:
 
 
 def resolve_focal(layout, config) -> tuple[float | None, str]:
-    """Focal length in *frame* pixels for HaWoR, and where it came from.
+    """Focal length in *frame* pixels for the hand stage, and where it came from.
 
     HaWoR reconstructs metric hands by unprojecting image crops with a focal
     length. ``hawor_motion_estimation`` hard-codes **600 px** when it is not told
@@ -260,10 +272,13 @@ def resolve_focal(layout, config) -> tuple[float | None, str]:
     resolves a real value in priority order and reports which it used, so the
     mistake cannot happen silently again.
 
-    Order: ``hand.focal`` in the config -> the intrinsics of Phase 3's camera
-    windows (scaled to the frame size) -> the reference trajectory's ``camera_K``
-    (evaluation clips only). Returns ``(None, "unavailable")`` when nothing can
-    answer, and the caller then warns instead of guessing.
+    Order: ``hand.focal`` in the config -> the reference trajectory's
+    calibrated ``camera_K`` (finite values only; official HOT3D-Clips ship
+    f=609 at 1408) -> the intrinsics of Phase 3's camera windows (VGGT's
+    *estimate*, which measured 709 on the same frames - a 16 % depth bias
+    that is exactly the class of error this resolution exists to avoid).
+    Returns ``(None, "unavailable")`` when nothing can answer, and the caller
+    then warns instead of guessing.
     """
     from ego3d_action.camera.depth import scale_intrinsics
     from ego3d_action.io.serialization import load_npz
@@ -275,6 +290,18 @@ def resolve_focal(layout, config) -> tuple[float | None, str]:
     metadata = clip_metadata(layout)
     width = int(metadata.get("width", 320))
     height = int(metadata.get("height", 240))
+
+    reference = layout.trajectory_dir / "ground_truth.npz"
+    if reference.is_file():
+        data = load_npz(reference, required=("camera_K",))
+        intrinsics = np.asarray(data["camera_K"], dtype=np.float64)
+        candidate = float(np.median(intrinsics[:, 0, 0]))
+        if np.isfinite(candidate) and candidate > 0.0:
+            return candidate, "reference camera_K"
+        # A reference without intrinsics (NaN camera_K, the HOT3D-Clips
+        # mirror) is not an answer - fall through to the estimate.
+        logger.debug("reference camera_K holds no finite focal length; ignoring it")
+
     for path in sorted(layout.camera_windows_dir.glob("*.npz")):
         data = load_npz(path, required=("intrinsics", "depth"))
         depth = np.asarray(data["depth"])
@@ -287,20 +314,6 @@ def resolve_focal(layout, config) -> tuple[float | None, str]:
             continue
         return candidate, "Phase 3 camera windows"
 
-    reference = layout.trajectory_dir / "ground_truth.npz"
-    if reference.is_file():
-        data = load_npz(reference, required=("camera_K",))
-        intrinsics = np.asarray(data["camera_K"], dtype=np.float64)
-        candidate = float(np.median(intrinsics[:, 0, 0]))
-        if not np.isfinite(candidate) or candidate <= 0.0:
-            # A reference without intrinsics (NaN camera_K) is not an answer:
-            # falling through would hand HaWoR a NaN focal and poison every
-            # window it writes. The caller warns and HaWoR uses its default.
-            logger.warning(
-                "reference camera_K holds no finite focal length; ignoring it"
-            )
-            return None, "unavailable"
-        return candidate, "reference camera_K"
     return None, "unavailable"
 
 
