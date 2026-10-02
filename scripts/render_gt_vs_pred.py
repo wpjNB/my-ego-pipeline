@@ -37,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from ego3d_action.cli import base_parser, build_context, fail  # noqa: E402
 from ego3d_action.errors import Ego3DActionError, StageIOError  # noqa: E402
 from ego3d_action.evaluation.dataset import load_trajectory  # noqa: E402
+from ego3d_action.evaluation.gt_align import apply_offset, camera_frame_offset  # noqa: E402
 from ego3d_action.io.frames import load_frame_set  # noqa: E402
 from ego3d_action.visualization.overlay import write_wrist_comparison_video  # noqa: E402
 
@@ -50,9 +51,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-frames", type=int, default=None)
     parser.add_argument("--stills", type=int, default=4, help="number of single-frame PNGs to save")
     parser.add_argument(
+        "--output",
+        default=None,
+        help="write the video here (default: <clip>/visualization/gt_vs_pred.mp4; "
+        "single-frame stills go to <stem>_stills/)",
+    )
+    parser.add_argument(
         "--skeleton",
         action="store_true",
         help="also draw the reference's 21 joints (needs a MANO-built reference)",
+    )
+    parser.add_argument(
+        "--align-gt",
+        action="store_true",
+        help="align the GT hands with a per-hand constant camera-frame translation "
+        "estimated against the prediction (removes the mirror GT's rigid hand-eye "
+        "offset, so the overlay lands on the visible hands)",
     )
     args = parser.parse_args(argv)
 
@@ -70,6 +84,34 @@ def main(argv: list[str] | None = None) -> int:
             raise StageIOError(
                 f"prediction has {prediction.num_frames} frames but the reference has "
                 f"{reference.num_frames}"
+            )
+        if args.align_gt:
+            if prediction is None:
+                return fail("--align-gt needs --prediction to estimate the offset from")
+            offsets = camera_frame_offset(
+                prediction.joints_world,
+                reference.joints_world,
+                pred_rotation_c2w=prediction.rotation_c2w,
+                pred_translation_c2w=prediction.translation_c2w,
+                gt_rotation_c2w=reference.rotation_c2w,
+                gt_translation_c2w=reference.translation_c2w,
+                pred_valid=prediction.valid,
+                gt_valid=reference.valid,
+            )
+            print(
+                "GT translation alignment (camera frame, per hand): "
+                f"left {np.round(offsets[0] * 100.0, 1)} cm, right {np.round(offsets[1] * 100.0, 1)} cm"
+            )
+            from dataclasses import replace  # noqa: PLC0415
+
+            reference = replace(
+                reference,
+                joints_world=apply_offset(
+                    reference.joints_world,
+                    reference.rotation_c2w,
+                    reference.translation_c2w,
+                    offsets,
+                ),
             )
 
         frames = load_frame_set(layout.data_root, layout.clip)
@@ -89,7 +131,9 @@ def main(argv: list[str] | None = None) -> int:
                   for k in range(args.stills)] if args.stills else []
         still_steps = sorted({indices.index(s) for s in stills if s in indices})
 
-        out_path = layout.visualization_dir / "gt_vs_pred.mp4"
+        out_path = (
+            Path(args.output) if args.output else layout.visualization_dir / "gt_vs_pred.mp4"
+        )
         write_wrist_comparison_video(
             subset,
             reference.joints_world[indices],
@@ -123,12 +167,32 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _intrinsics_for(frames, layout) -> np.ndarray:
-    """Clip intrinsics: from the reference trajectory when present, else the camera."""
+    """Clip intrinsics: from the reference trajectory when present, else the camera.
+
+    A reference whose ``camera_K`` is not finite (the HOT3D-Clips mirror ships
+    no intrinsics) falls back to Phase 3's first camera window instead of
+    feeding NaN into every projection.
+    """
     ground_truth = layout.trajectory_dir / "ground_truth.npz"
     if ground_truth.is_file():
         from ego3d_action.io.serialization import load_npz
 
-        return np.asarray(load_npz(ground_truth, required=("camera_K",))["camera_K"], dtype=np.float64)
+        candidate = np.asarray(
+            load_npz(ground_truth, required=("camera_K",))["camera_K"], dtype=np.float64
+        )
+        if np.isfinite(candidate).all():
+            return candidate
+    for path in sorted(layout.camera_windows_dir.glob("*.npz")):
+        from ego3d_action.camera.depth import scale_intrinsics
+
+        data = load_npz(path, required=("intrinsics", "depth"))
+        depth = np.asarray(data["depth"])
+        scaled = scale_intrinsics(
+            np.asarray(data["intrinsics"])[0],
+            source_size=(int(depth.shape[2]), int(depth.shape[1])),
+            target_size=(frames.width, frames.height),
+        )
+        return np.broadcast_to(scaled, (frames.num_frames, 3, 3)).copy()
     from ego3d_action.testing.synthetic import make_intrinsics
 
     base = make_intrinsics(frames.width, frames.height)

@@ -25,6 +25,7 @@ from ego3d_action.evaluation.benchmark import (  # noqa: E402
     stopwatch,
 )
 from ego3d_action.evaluation.dataset import load_trajectory  # noqa: E402
+from ego3d_action.evaluation.gt_align import apply_offset, camera_frame_offset  # noqa: E402
 from ego3d_action.io.serialization import save_json  # noqa: E402
 
 
@@ -40,6 +41,15 @@ def main(argv: list[str] | None = None) -> int:
         help="wall time of the full pipeline; used for the FPS column",
     )
     parser.add_argument("--json", dest="json_out", default=None, help="write the report as JSON")
+    parser.add_argument(
+        "--align-gt",
+        action="store_true",
+        help="align the GT hands with a per-hand constant camera-frame translation "
+        "before scoring. The HOT3D-mirror hand GT carries a rigid hand-eye offset "
+        "(constant 1.7-6.9 cm vs 2.4-3.7 cm per-frame residual, measured 2026-10-01); "
+        "this removes it by construction, so the numbers measure time-varying "
+        "agreement, not absolute placement. Camera error is unaffected.",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -53,6 +63,30 @@ def main(argv: list[str] | None = None) -> int:
                 f"frame count mismatch: prediction has {prediction.num_frames}, "
                 f"ground truth has {ground_truth.num_frames}"
             )
+        if args.align_gt:
+            offsets = camera_frame_offset(
+                prediction.joints_world,
+                ground_truth.joints_world,
+                pred_rotation_c2w=prediction.rotation_c2w,
+                pred_translation_c2w=prediction.translation_c2w,
+                gt_rotation_c2w=ground_truth.rotation_c2w,
+                gt_translation_c2w=ground_truth.translation_c2w,
+                pred_valid=prediction.valid,
+                gt_valid=ground_truth.valid,
+            )
+            print(
+                "GT translation alignment (camera frame, per hand): "
+                f"left {np.round(offsets[0] * 100.0, 1)} cm, right {np.round(offsets[1] * 100.0, 1)} cm"
+            )
+            from dataclasses import replace  # noqa: PLC0415
+
+            aligned_world = apply_offset(
+                ground_truth.joints_world,
+                ground_truth.rotation_c2w,
+                ground_truth.translation_c2w,
+                offsets,
+            )
+            ground_truth = replace(ground_truth, joints_world=aligned_world)
 
         with stopwatch() as timer:
             result = action_mpjpe(
