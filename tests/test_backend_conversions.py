@@ -244,6 +244,20 @@ def test_hawor_tracks_round_trip_through_npy(tmp_path: Path) -> None:
     assert reloaded[0][0]["frame"] == 0
 
 
+def test_hawor_tracks_drop_a_hand_with_no_detections() -> None:
+    """One-sided clips are normal egocentric data; HaWoR crashes on an empty hand."""
+    boxes, confidence, valid = make_tracking()
+    valid[:, 1] = False  # the right hand is never detected
+
+    _, tracks = hawor_tracks_from_detection(boxes=boxes, confidence=confidence, valid=valid)
+    assert set(tracks) == {0}
+    assert len(tracks[0]) == int(valid[:, 0].sum())
+
+    valid[:] = False  # nothing at all
+    _, tracks = hawor_tracks_from_detection(boxes=boxes, confidence=confidence, valid=valid)
+    assert tracks == {}
+
+
 def test_hawor_tracks_validate_shapes() -> None:
     with pytest.raises(StageIOError):
         hawor_tracks_from_detection(
@@ -645,8 +659,10 @@ def test_hawor_drops_cached_tracks_when_the_focal_changes(tmp_path: Path) -> Non
     (seq / "tracks_0_450").mkdir(parents=True)
     (seq / "tracks_0_450" / "frame_chunks_all.npy").write_bytes(b"stale")
 
+    import json
+
     runner.invalidate_stale_hand_cache(seq, 221.14)
-    assert (seq / "est_focal.txt").read_text() == "221.14"
+    assert json.loads((seq / "est_focal.txt").read_text())["focal"] == 221.14
     assert (seq / "tracks_0_450").is_dir()  # nothing to compare against -> keep
 
     runner.invalidate_stale_hand_cache(seq, 600.0)
@@ -658,3 +674,24 @@ def test_hawor_drops_cached_tracks_when_the_focal_changes(tmp_path: Path) -> Non
     assert (seq / "tracks_1_2").is_dir()
     runner.invalidate_stale_hand_cache(seq, None)
     assert (seq / "tracks_1_2").is_dir()
+
+    # A box-padding change invalidates just like a focal change: the crops
+    # differ, so the cached reconstruction is stale even at the same focal.
+    (seq / "tracks_3_4").mkdir()
+    runner.invalidate_stale_hand_cache(seq, 600.0, box_pad=1.5)
+    assert not (seq / "tracks_3_4").exists()
+    assert json.loads((seq / "est_focal.txt").read_text())["box_pad"] == 1.5
+    runner.invalidate_stale_hand_cache(seq, 600.0, box_pad=1.5)
+    assert json.loads((seq / "est_focal.txt").read_text())["box_pad"] == 1.5
+
+    # A changed *detection* invalidates too: a different tracked-box
+    # fingerprint (e.g. a relaxed tracker threshold) produces different crops
+    # at the same focal and padding, so the cache is stale even though the
+    # focal and padding agree - the marker did not track this before.
+    (seq / "tracks_5_6").mkdir()
+    runner.invalidate_stale_hand_cache(seq, 600.0, box_pad=1.5, boxes_fingerprint="aa11")
+    assert not (seq / "tracks_5_6").exists()  # boxes changed -> drop
+    assert json.loads((seq / "est_focal.txt").read_text())["boxes"] == "aa11"
+    (seq / "tracks_7_8").mkdir()
+    runner.invalidate_stale_hand_cache(seq, 600.0, box_pad=1.5, boxes_fingerprint="aa11")
+    assert (seq / "tracks_7_8").is_dir()  # identical inputs -> keep

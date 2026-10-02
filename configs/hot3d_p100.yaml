@@ -53,7 +53,7 @@ preprocess:
 
 detection:
   detector_confidence: 0.1
-  # min_confidence gates ANCHORS and stays at the 0.75 spec: WiLoR's 0.5-0.75
+  # min_confidence gates ANCHORS. The 0.75 spec exists because WiLoR's 0.5-0.75
   # band on this lens is full of forearm / frame-edge fragments, and anchoring
   # them reconstructed phantom hands after the real hand left the view
   # (hot3d_ep003 windows 144-175). The relaxed max_gap 8 + continuity tracker
@@ -63,13 +63,37 @@ detection:
   # 54.8 % -> 78.1 % (left detection 22.7 % -> 58.7 %), wrist error improves
   # slightly, MPJPE stays ~flat (+2.2 mm - the recovered frames are the hard
   # ones). Continuity is worth more than the metric delta on this host.
-  min_confidence: 0.75
+  # 2026-10-01 experiment: 0.65 - most dropout frames still carry a WiLoR
+  # candidate at 0.59-0.74 (e.g. ep003 333-377: 69 % of frames), so 0.75
+  # discards visible hands. Measured (vs the 0.75 baseline
+  # ep000 161.4 mm / 63.6 %, ep003 185.4 mm / 69.3 %):
+  #   ep000: coverage 63.6 -> 88.0 %, Action-MPJPE 162.6 -> 162.7 mm (flat),
+  #          wrist 67.0 -> 61.6 mm
+  #   ep003: coverage 69.3 -> 82.4 %, Action-MPJPE 185.4 -> 194.3 mm (+4.8 %),
+  #          wrist 84.3 -> 90.6 mm - the cost sits in ~19 recovered low-conf
+  #          frames (361-379, 30-58 cm wrist error, no runaway window).
+  # No phantom divergence: every wrist stays within 64 cm of the camera.
+  # Kept for continuity (dropouts were the visible failure); revert to 0.75
+  # for the conservative metric profile.
+  min_confidence: 0.65
   max_gap: 8
+  # Widen tracked boxes before HaWoR: the tracker's tight boxes cut fingers
+  # out of the 256px crops, and HaWoR then guesses the hidden finger depth
+  # (up to +25 cm away-from-camera at the fingertips). 1.5x measured on
+  # hot3d_ep000 (2026-09-30): finger-z bias down ~20%, Action-MPJPE
+  # 187.9 -> 161.6 mm. Wrist error trades up slightly (38 -> 57 mm).
+  box_padding: 1.5
   iou_threshold: 0.20
 
 hand:
   window: 16
   overlap: 8
+  # WiLoR crop padding (scripts/run_hand_wilor.py). Sweep on hot3d_ep000
+  # (2026-10-01): 2.0 = the WiLoR demo default, 2.5 = this checkout's own
+  # ViTDetDataset default, 3.0 dilutes the hand. 2.5 tracked the visible
+  # hands best in the f150/f300/f380 overlays - larger crops give the wrist
+  # more forearm context, which the demo's tighter 2.0 starves.
+  wilor_rescale: 2.5
   # One [1,2,1] pass over the blended camera-space hands damps the white
   # reconstruction noise (wrist step 17-20 -> 11 mm/frame). The remaining
   # wobble is HaWoR's own mid-frequency oscillation (~2 deg/frame), which more
@@ -108,6 +132,18 @@ refinement:
   bone_scale_reference: mean  # the reference recipe (blog ablation: mean wins, median regressed)
   wrist_depth_lambda: 0.2
   wrist_depth_max_change: null
+  # P2 short-gap interpolation: longest missing run that is filled.
+  gap_fill_max_frames: 12
+  # P3 UKF + unscented RTS (reference UI defaults, "lighter smoothing").
+  # q up = follows the hand more; r/beta up = smoother.
+  # Recommended q 0.4-1.0, r 0.3-1.0, beta 0.2-3.0; safe q/r 0.1-2.0, beta 0-5.
+  # Measured on ep000/ep003 (doc_auto/ablation.md): every set keeps MPJPE
+  # within 0.6 mm, only the residual jitter differs - this set cuts it 50-60 %,
+  # the library default 0.6/0.6/2.0 cuts 57-69 %.
+  ukf_q: 0.7
+  ukf_r: 0.5
+  ukf_beta: 0.3
+  ukf_rts: true
 
 evaluation:
   dataset: hot3d

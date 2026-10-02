@@ -46,6 +46,7 @@ the checkpoint and a GPU is the HaWoR call sequence itself.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -464,8 +465,22 @@ def _patch_crop_size(crop_size: int) -> None:
     TrackDatasetEval.__init__ = init_with_crop_size  # type: ignore[method-assign]
 
 
-def invalidate_stale_hand_cache(seq_folder: Path, focal: float | None) -> None:
-    """Drop HaWoR's cached hand parameters when the focal length changed.
+def _pad_boxes(boxes: np.ndarray, pad: float) -> np.ndarray:
+    """Scale boxes about their centres by ``pad`` (1.0 = unchanged)."""
+    if pad == 1.0:
+        return boxes
+    centre = (boxes[..., :2] + boxes[..., 2:]) / 2.0
+    half = (boxes[..., 2:] - boxes[..., :2]) / 2.0 * pad
+    return np.concatenate([centre - half, centre + half], axis=-1)
+
+
+def invalidate_stale_hand_cache(
+    seq_folder: Path,
+    focal: float | None,
+    box_pad: float = 1.0,
+    boxes_fingerprint: str | None = None,
+) -> None:
+    """Drop HaWoR's cached hand parameters when the reconstruction inputs changed.
 
     ``hawor_motion_estimation`` short-circuits to
     ``tracks_<start>_<end>/frame_chunks_all.npy`` whenever that file exists, and
@@ -477,14 +492,35 @@ def invalidate_stale_hand_cache(seq_folder: Path, focal: float | None) -> None:
     if focal is None:
         return
     marker = seq_folder / "est_focal.txt"
-    previous: float | None = None
+    # The marker records everything HaWoR's internal cache depends on: the
+    # focal, the detection-box padding (a padded box changes the crops but not
+    # the focal - without this the cache silently returned the old
+    # reconstruction, which is exactly why the padding experiment first
+    # looked like a no-op), and a fingerprint of the tracked boxes themselves
+    # (a tracker change, e.g. a different min_confidence, produces different
+    # boxes at the same focal and padding).
+    marker_state: dict[str, object] = {"focal": float(focal), "box_pad": float(box_pad)}
+    if boxes_fingerprint is not None:
+        marker_state["boxes"] = str(boxes_fingerprint)
+    previous_state = None
     if marker.is_file():
         try:
-            previous = float(marker.read_text().strip())
-        except ValueError:
-            previous = None
-    marker.write_text(str(float(focal)))
-    if previous is None or abs(previous - float(focal)) < 1e-6:
+            loaded = json.loads(marker.read_text())
+            previous_state = {"focal": float(loaded["focal"]),
+                              "box_pad": float(loaded.get("box_pad", 1.0))}
+            if "boxes" in loaded:
+                previous_state["boxes"] = str(loaded["boxes"])
+        except (ValueError, KeyError, TypeError):
+            try:
+                previous_state = {"focal": float(marker.read_text().strip()), "box_pad": 1.0}
+            except ValueError:
+                previous_state = None
+    marker.write_text(json.dumps(marker_state))
+    # No previous marker: nothing to compare against - the caches stay (this
+    # also keeps a version upgrade from wiping a valid cache once).
+    if previous_state is None:
+        return
+    if previous_state == marker_state:
         return
     removed = 0
     for cache in sorted(seq_folder.glob("tracks_*")):
@@ -493,8 +529,11 @@ def invalidate_stale_hand_cache(seq_folder: Path, focal: float | None) -> None:
             removed += 1
     if removed:
         print(
-            f"focal changed {previous} -> {focal}: dropped {removed} cached HaWoR "
-            "track(s) so the hands are not reconstructed at the old depth",
+            f"reconstruction inputs changed "
+            f"(focal {previous_state['focal'] if previous_state else 'unset'} -> "
+            f"{marker_state['focal']}, "
+            f"box_pad {previous_state['box_pad'] if previous_state else 'unset'} -> "
+            f"{marker_state['box_pad']}): dropped {removed} cached HaWoR track(s)",
             file=sys.stderr,
         )
 
@@ -580,17 +619,26 @@ def run_model(args: argparse.Namespace) -> dict[str, np.ndarray]:
     out_dir = Path(args.out_dir).resolve()
     seq_folder = out_dir.parent / "hawor_seq"
     seq_folder.mkdir(parents=True, exist_ok=True)
-    # Drop stale caches BEFORE writing this run's model_tracks.npy below: the
-    # invalidation removes whole tracks_<start>_<end> directories, and ours is
-    # one of them. Called after the save it would delete the tracking this run
-    # just wrote and hawor_motion_estimation would then find no input at all.
-    invalidate_stale_hand_cache(seq_folder, args.focal)
 
     # 1. our tracking becomes HaWoR's model_tracks.npy
     detection = load_npz(args.detection, required=("boxes", "confidence", "valid"))
     boxes = np.asarray(detection["boxes"], dtype=np.float64)
     confidence = np.asarray(detection["confidence"], dtype=np.float64)
     valid = np.asarray(detection["valid"], dtype=bool)
+    box_pad = float(getattr(args, "box_pad", 1.0) or 1.0)
+    boxes = _pad_boxes(boxes, box_pad)
+    # Drop stale caches BEFORE writing this run's model_tracks.npy below: the
+    # invalidation removes whole tracks_<start>_<end> directories, and ours is
+    # one of them. Called after the save it would delete the tracking this run
+    # just wrote and hawor_motion_estimation would then find no input at all.
+    # The fingerprint covers the tracked boxes themselves, so a detection
+    # change (a different min_confidence, say) cannot silently reuse the old
+    # reconstruction the way the focal/box_pad changes once did.
+    boxes_fingerprint = hashlib.sha1(np.ascontiguousarray(boxes).tobytes()).hexdigest()[:16]
+    invalidate_stale_hand_cache(
+        seq_folder, args.focal, box_pad, boxes_fingerprint=boxes_fingerprint
+    )
+
     model_boxes, tracks = hawor_tracks_from_detection(
         boxes=boxes, confidence=confidence, valid=valid
     )
@@ -603,6 +651,30 @@ def run_model(args: argparse.Namespace) -> dict[str, np.ndarray]:
         f"(left {int(valid[:, 0].sum())}, right {int(valid[:, 1].sum())})",
         file=sys.stderr,
     )
+
+    if not any(tracks.values()):
+        # A clip with no tracked hand-frame at all is a valid outcome on hard
+        # egocentric footage, not a runner failure: HaWoR's own code would
+        # crash on the empty track lists, so short-circuit to an all-invalid
+        # result. Downstream stages treat it as "everything missing" and the
+        # never-fabricate rule does the rest.
+        print(
+            "HaWoR: no tracked hand-frames in this clip; emitting an all-invalid hand result",
+            file=sys.stderr,
+        )
+        total = int(boxes.shape[0])
+        empty_landmarks = np.full((total, 2, 21, 3), np.nan)
+        empty_vertices = np.full((total, 2, 778, 3), np.nan)
+        identity = np.broadcast_to(np.eye(3), (total, 3, 3)).copy()
+        return to_camera_space(
+            identity,
+            np.zeros((total, 3)),
+            empty_landmarks,
+            valid=valid,
+            pred_valid=np.zeros((2, total)),
+            confidence=confidence,
+            vertices=empty_vertices,
+        )
 
     # 2. HaWoR itself - everything below runs from inside the checkout, so all
     #    relative paths handed to HaWoR (and its "./_DATA" cache dir) resolve.
@@ -715,6 +787,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weights", default="weights")
     parser.add_argument("--device", default="auto")
     parser.add_argument(
+        "--box-pad",
+        type=float,
+        default=1.0,
+        help="scale tracked boxes about their centres before HaWoR (1.0 = off)",
+    )
+    parser.add_argument(
         "--precision",
         choices=("auto", "fp32", "fp16"),
         default="auto",
@@ -769,6 +847,7 @@ def main(argv: list[str] | None = None) -> int:
             # fp16 changes the numbers, so it is part of the unit identity.
             "precision": args.precision,
             "crop_size": args.crop_size,
+            "box_pad": args.box_pad,
         }
         if args.skip_existing and partition_is_reusable(
             out_dir, stage="hand", ranges=chosen, params=params, selection=selection

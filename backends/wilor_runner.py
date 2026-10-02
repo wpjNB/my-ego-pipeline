@@ -230,6 +230,21 @@ def main(argv: list[str] | None = None) -> int:
         if args.num_frames is not None and len(frames) != args.num_frames:
             raise ValueError(f"expected {args.num_frames} frames, found {len(frames)}")
         arrays = run_model(args, frames)
+        # A wedged GPU returns zeros for every kernel (seen on this host's
+        # P100s), and the pose head then emits a degenerate "detection" for
+        # every frame - count > 0 everywhere but every box is zero-area.
+        # Real NMS output cannot look like that: fail loudly instead of
+        # writing a poisoned artefact that the tracker silently reads as
+        # 0 % coverage.
+        boxes = np.asarray(arrays["boxes"])
+        if int(np.count_nonzero(arrays["count"])) and not np.any(
+            np.ptp(boxes, axis=-1) > 0
+        ):
+            raise RuntimeError(
+                "detector returned zero-area boxes for every frame "
+                f"({int(np.count_nonzero(arrays['count']))} frames with candidates) - "
+                "the device is likely returning zeros; refusing to write the artefact"
+            )
         save_npz(args.out, **arrays)
         emit(
             {
