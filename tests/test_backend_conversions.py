@@ -628,18 +628,18 @@ def test_resolve_focal_prefers_real_intrinsics_over_the_600px_default(
     focal, source = runner.resolve_focal(layout, _Config({}))
     assert focal is None and source == "unavailable"
 
-    # 2. a reference trajectory answers when the camera stage has not run yet
+    # 2. the reference calibration is DELIBERATELY ignored by the prediction
+    #    path: predictions are RGB-only and must never read the reference.
     intrinsics = np.broadcast_to(
         np.array([[221.14, 0.0, 255.8], [0.0, 221.14, 255.8], [0.0, 0.0, 1.0]]), (3, 3, 3)
     ).copy()
     np.savez(layout.trajectory_dir / "ground_truth.npz", camera_K=intrinsics)
     focal, source = runner.resolve_focal(layout, _Config({}))
-    assert abs(focal - 221.14) < 1e-6 and source == "reference camera_K"
+    assert focal is None and source == "unavailable"
 
-    # 3. the calibrated reference STILL wins when Phase 3's windows exist too:
-    #    on official HOT3D-Clips the reference says f=609 at 1408 while VGGT's
-    #    estimate says 709 - a 16 % depth bias, so the estimate must never
-    #    shadow the calibration.
+    # 3. Phase 3's windows answer (rescaled from the depth grid to the frame
+    #    size) even while a calibrated reference is present - the estimate is
+    #    the only allowed source on the prediction path.
     np.savez(
         layout.window_path(0, 4),
         intrinsics=np.broadcast_to(
@@ -648,13 +648,7 @@ def test_resolve_focal_prefers_real_intrinsics_over_the_600px_default(
         depth=np.zeros((4, 256, 256), dtype=np.float32),
     )
     focal, source = runner.resolve_focal(layout, _Config({}))
-    assert abs(focal - 221.14) < 1e-6 and source == "reference camera_K"
-
-    # 3b. without a reference, the windows answer (rescaled to the frame size)
-    (layout.trajectory_dir / "ground_truth.npz").unlink()
-    focal, source = runner.resolve_focal(layout, _Config({}))
     assert abs(focal - 221.14) < 0.05 and source == "Phase 3 camera windows"
-    np.savez(layout.trajectory_dir / "ground_truth.npz", camera_K=intrinsics)
 
     # 4. an explicit config value wins over everything
     focal, source = runner.resolve_focal(layout, _Config({"hand.focal": 300.0}))

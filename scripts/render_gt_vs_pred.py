@@ -192,11 +192,14 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _intrinsics_for(frames, layout) -> np.ndarray:
-    """Clip intrinsics: from the reference trajectory when present, else the camera.
+    """Clip intrinsics for the *evaluation* overlay: the reference first.
 
-    A reference whose ``camera_K`` is not finite (the HOT3D-Clips mirror ships
-    no intrinsics) falls back to Phase 3's first camera window instead of
-    feeding NaN into every projection.
+    This script audits a prediction against the reference on the real images,
+    so it projects with the calibrated K when the reference carries one (the
+    absolute error visible here includes the pipeline's own intrinsics
+    estimate error - that is the point). A reference whose ``camera_K`` is
+    not finite (the HOT3D-Clips mirror ships no intrinsics) falls back to
+    Phase 3's first camera window instead of feeding NaN into projections.
     """
     ground_truth = layout.trajectory_dir / "ground_truth.npz"
     if ground_truth.is_file():

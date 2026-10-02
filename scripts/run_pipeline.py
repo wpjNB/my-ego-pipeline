@@ -32,11 +32,14 @@ class Stage:
     requires_backend: str | None = None
 
 
+# The hand stage resolves its focal from the camera estimate (predictions are
+# RGB-only and never read the reference calibration), so phase3-camera runs
+# before phase2-hand despite the historical phase numbering.
 STAGES: tuple[Stage, ...] = (
     Stage("phase0-preprocess", "run_preprocess.py"),
     Stage("phase1-detection", "run_detection.py", "WiLoR"),
-    Stage("phase2-hand", "run_hand.py", "HaWoR"),
     Stage("phase3-camera", "run_camera.py", "VGGT-Omega"),
+    Stage("phase2-hand", "run_hand.py", "HaWoR"),
     Stage("phase4-stitch", "run_stitch.py"),
     Stage("phase5-fusion", "run_fusion.py"),
     Stage("phase6-refine", "run_refine.py"),

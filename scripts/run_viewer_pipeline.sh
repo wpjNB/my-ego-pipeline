@@ -68,16 +68,9 @@ fi
 stage detection "$CLIP_DIR/detection/detection.npz" \
     "$PY" scripts/run_detection.py --config "$CONFIG" --clip "$CLIP" --device "$DEVICE"
 
-# ---- phase 2: hand reconstruction ------------------------------------------
-case "$HAND" in
-    wilor) HAND_SCRIPT=scripts/run_hand_wilor.py ;;
-    hawor) HAND_SCRIPT=scripts/run_hand.py ;;
-    *) echo "HAND must be wilor or hawor (got $HAND)" >&2; exit 1 ;;
-esac
-stage "hand ($HAND)" "$CLIP_DIR/hand/hand_camera.npz" \
-    "$PY" "$HAND_SCRIPT" --config "$CONFIG" --clip "$CLIP" --device "$DEVICE"
-
-# ---- phase 3: VGGT-Omega camera windows ------------------------------------
+# ---- phase 3: VGGT-Omega camera windows (BEFORE the hand stage: the hand
+# stage resolves its focal from this estimate - the prediction path never
+# reads the reference calibration, the contract is "RGB in") ----------------
 if compgen -G "$CLIP_DIR/camera/windows/*.npz" > /dev/null; then
     if [ "$FORCE" != "1" ]; then
         echo "==> camera: skip (camera/windows exists; FORCE=1 to re-run)"
@@ -89,6 +82,15 @@ else
     echo "==> camera"
     "$PY" scripts/run_camera.py --config "$CONFIG" --clip "$CLIP" --device "$DEVICE"
 fi
+
+# ---- phase 2: hand reconstruction (uses the camera estimate above) ---------
+case "$HAND" in
+    wilor) HAND_SCRIPT=scripts/run_hand_wilor.py ;;
+    hawor) HAND_SCRIPT=scripts/run_hand.py ;;
+    *) echo "HAND must be wilor or hawor (got $HAND)" >&2; exit 1 ;;
+esac
+stage "hand ($HAND)" "$CLIP_DIR/hand/hand_camera.npz" \
+    "$PY" "$HAND_SCRIPT" --config "$CONFIG" --clip "$CLIP" --device "$DEVICE"
 
 # ---- phase 4: window stitching ---------------------------------------------
 stage stitch "$CLIP_DIR/camera/stitched_camera.npz" \

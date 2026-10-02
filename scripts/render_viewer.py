@@ -53,17 +53,11 @@ HEADER_HEIGHT = 26
 
 
 def _ego_intrinsics(viz_dir: Path, frames_dir: Path, size: tuple[int, int]):
-    """The overlay intrinsics: calibrated reference K first (official clips),
-    else the first camera window, matching run_hand's precedence."""
+    """The overlay intrinsics: the pipeline's own estimate (Phase 3 windows),
+    never the reference calibration - the panel renders the prediction and
+    must project it exactly as the stage did (see run_hand.resolve_focal)."""
     from ego3d_action.camera.depth import scale_intrinsics
 
-    reference = viz_dir.parent / "trajectory" / "ground_truth.npz"
-    if reference.is_file():
-        from ego3d_action.io.serialization import load_npz as _load
-
-        candidate = np.asarray(_load(reference, required=("camera_K",))["camera_K"], dtype=np.float64)
-        if np.isfinite(candidate).all():
-            return candidate[0]
     window = sorted(viz_dir.parent.glob("camera/windows/*.npz"))[0]
     data = load_npz(window, required=("intrinsics", "depth"))
     return scale_intrinsics(
