@@ -120,6 +120,18 @@ def main(argv: list[str] | None = None) -> int:
     if frames_dir.exists() and not args.overwrite and any(frames_dir.glob("*.jpg")):
         print(f"{clip_dir} already imported (pass --overwrite to redo)")
         return 1
+    if args.overwrite:
+        # Re-importing replaces the frames, so every artefact derived from
+        # them is stale: detection, hands, camera windows (their VGGT focal
+        # feeds the hand stage!), stitching, trajectories and renders. The
+        # calibrated ground_truth.npz is rewritten by this script anyway.
+        import shutil  # noqa: PLC0415
+
+        for stale in ("frames", "detection", "hand", "camera", "stitched",
+                      "trajectory", "visualization"):
+            target = clip_dir / stale
+            if target.is_dir():
+                shutil.rmtree(target)
 
     import cv2  # noqa: PLC0415
     import torch  # noqa: PLC0415
@@ -146,7 +158,15 @@ def main(argv: list[str] | None = None) -> int:
             cv2.IMREAD_COLOR,
         )
         height, width = first_img.shape[:2]
-        focal = width / 2.0  # 90 deg horizontal FOV pinhole
+        # Official convention: clip_util.convert_to_pinhole_camera(focal_scale=1.0)
+        # keeps the fisheye focal (f ~= 609 at 1408), i.e. ~98 deg FOV - wider
+        # than a 90 deg pinhole and the value the reference visualizer uses.
+        # NOTE: content beyond ~49 deg off-axis is still cropped by any sane
+        # pinhole; HOT3D-Clips do contain hands raised right next to the lens
+        # (measured up to 64 deg off-axis in clip-001991), which this
+        # preparation cannot represent - the challenge handles those with
+        # per-hand crops instead. The 3D GT reference is unaffected.
+        focal = float(getattr(model, "f", [width / 2.0])[0])
         map_x, map_y = _undistort_maps({"model": model}, width, height, focal)
         pinhole_spec = {
             "width": width, "height": height,
