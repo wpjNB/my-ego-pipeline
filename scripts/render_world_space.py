@@ -1,11 +1,18 @@
 #!/usr/bin/env python
 """World-space visualisation: camera trajectory + both hands (blog style).
 
-Renders the reference system's "WORLD SPACE" panel: both MANO hands and the
-camera trajectory in the stitched world frame, on a dark grid, in centimetres,
-with wrist trails, drop lines, an axes triad, wrist-height labels and a 10 cm
-scale bar. Static PNG by default; ``--video`` additionally animates the trails
-growing over time with the current hands and camera pose per frame.
+Renders the reference system's "WORLD SPACE" panel in the fixed world frame
+(X right / Y forward / Z up), in centimetres: a 10 cm ground grid, the dashed
+camera path with the current 视线/+Zc · 右/+Xc · 上/-Yc pose axes, the current
+hands with drop lines and hand-to-camera distance labels, a legend, a frame
+counter, a 10 cm scale bar and the X/Y/Z triad screen-anchored in the
+top-right corner. Static PNG by default; ``--video`` additionally animates the
+camera path growing over time with the current hands and camera pose per frame.
+
+The trajectory contract's world frame is *the first frame's camera frame*
+(CV convention: x right, y down, z forward), so the panel canonicalises it for
+display with ``(x, y, z) -> (x, z, -y)``: forward becomes +Y and physical up
+(-Y_cam) becomes +Z, matching the reference panel's 固定世界系 Z-up layout.
 
 Everything comes from the on-disk trajectory contract
 (``trajectory/trajectory.npz``: ``hand_xyz_world``, ``hand_valid``,
@@ -34,12 +41,24 @@ GRID = "#3a414b"
 LEFT_COLOUR = "#4fd8e8"  # cyan, matching the reference panel
 RIGHT_COLOUR = "#f0d848"  # yellow
 CAMERA_COLOUR = "#e88ad2"  # pink camera path
+CAMERA_AXIS_COLOUR = "#f0a848"  # orange camera axes (right/up)
 GT_ALPHA = 0.45
 SCALE_BAR_M = 0.10
-AXIS_LEN_M = 0.20
-TRAIL_STRIDE = 2  # subsample the trails (they are dense at 30 fps)
+CAMERA_AXIS_CM = 12.0  # length of the current-pose camera axes
 BONE_PAIRS = list(bone_pairs())
-SKELETON_EVERY = 10  # hand-fan density along the trail
+
+
+def _cjk_font() -> None:
+    """The panel labels are Chinese; JP covers the simplified glyphs we use."""
+    import matplotlib.pyplot as plt
+
+    plt.rcParams["font.sans-serif"] = ["Noto Sans CJK JP", "DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
+
+
+def _to_fixed_frame(points: np.ndarray) -> np.ndarray:
+    """Contract world frame (X右/Y下/Z前) -> fixed display frame (X右/Y前/Z上)."""
+    return np.stack([points[..., 0], points[..., 2], -points[..., 1]], axis=-1)
 
 
 def _load(name: str, path: str | Path) -> dict[str, np.ndarray]:
@@ -47,11 +66,14 @@ def _load(name: str, path: str | Path) -> dict[str, np.ndarray]:
         path,
         required=("hand_xyz_world", "hand_valid", "camera_R_c2w", "camera_t_c2w"),
     )
+    # ``camera_R_c2w``'s columns are the camera axes *in the contract frame*;
+    # rotating them the same way keeps 视线/+Zc etc. correct on screen.
+    rotation = np.asarray(data["camera_R_c2w"], dtype=np.float64)
     return {
-        "joints": np.asarray(data["hand_xyz_world"], dtype=np.float64),
+        "joints": _to_fixed_frame(np.asarray(data["hand_xyz_world"], dtype=np.float64)),
         "valid": np.asarray(data["hand_valid"], dtype=bool),
-        "R": np.asarray(data["camera_R_c2w"], dtype=np.float64),
-        "t": np.asarray(data["camera_t_c2w"], dtype=np.float64),
+        "R": _to_fixed_frame(rotation),
+        "t": _to_fixed_frame(np.asarray(data["camera_t_c2w"], dtype=np.float64)),
         "name": name,
     }
 
@@ -73,41 +95,111 @@ def _ranges(points: list[np.ndarray]) -> tuple[float, float, float]:
     return tuple((centre[i] - half[i], centre[i] + half[i]) for i in range(3))
 
 
+def _floor_grid(axes, tracks: list[dict], z0: float) -> None:
+    """10 cm ground grid on the floor plane, spanning the fixed axes range."""
+    x_lim, y_lim, _ = _limits(tracks, None)
+    step = 10.0
+    xs = np.arange(np.floor(x_lim[0] / step) * step, x_lim[1] + step, step)
+    ys = np.arange(np.floor(y_lim[0] / step) * step, y_lim[1] + step, step)
+    for x in xs:
+        axes.plot([x, x], [y_lim[0], y_lim[1]], [z0, z0], color=GRID, lw=0.5, alpha=0.45)
+    for y in ys:
+        axes.plot([x_lim[0], x_lim[1]], [y, y], [z0, z0], color=GRID, lw=0.5, alpha=0.45)
+
+
+def _camera_axes(axes, track: dict, cur: int) -> None:
+    """The current camera pose: pink view axis (+Zc) and orange right/up."""
+    c = track["t"][cur] * 100.0
+    rot = track["R"][cur]
+    for column, sign, colour, lw, label in (
+        (2, 1.0, CAMERA_COLOUR, 2.2, "视线/+Zc"),
+        (0, 1.0, CAMERA_AXIS_COLOUR, 1.3, "右/+Xc"),
+        (1, -1.0, CAMERA_AXIS_COLOUR, 1.3, "上/-Yc"),
+    ):
+        direction = rot[:, column] * sign
+        tip = c + CAMERA_AXIS_CM * direction / max(np.linalg.norm(direction), 1e-12)
+        axes.plot([c[0], tip[0]], [c[1], tip[1]], [c[2], tip[2]], color=colour, lw=lw)
+        axes.text(tip[0], tip[1], tip[2], label, color=colour, fontsize=7)
+
+
+def _corner_triad(axes, *, anchor=(0.86, 0.86), length_px: float = 34.0) -> None:
+    """The world-axis (X/Y/Z) triad, screen-anchored in the top-right corner.
+
+    The 3D axis directions are projected through the live view and drawn in
+    axes-fraction coordinates, so the triad reads the current orientation
+    without sitting in the scene. Call after ``view_init`` and
+    ``tight_layout`` (the transforms must be final).
+    """
+    from mpl_toolkits.mplot3d import proj3d
+
+    to_display = axes.transData
+    inverse = axes.transAxes.inverted()
+    anchor_px = np.asarray(axes.transAxes.transform(anchor))
+    proj = axes.get_proj()
+    origin = np.zeros(3)
+    ox, oy, _ = proj3d.proj_transform(*origin, proj)
+    origin_px = np.asarray(to_display.transform((ox, oy)))
+    for direction, colour, label in (
+        ((1, 0, 0), "#ff5d5d", "X"), ((0, 1, 0), "#7ee87e", "Y"),
+        ((0, 0, 1), "#6da8ff", "Z"),
+    ):
+        tx, ty, _ = proj3d.proj_transform(*(origin + np.asarray(direction, float)), proj)
+        tip_px = np.asarray(to_display.transform((tx, ty)))
+        delta = tip_px - origin_px
+        norm = float(np.linalg.norm(delta))
+        if norm < 1e-9:
+            continue  # an axis pointing straight at the camera has no direction
+        tip = inverse.transform(anchor_px + delta / norm * length_px)
+        axes.annotate("", xy=tip, xytext=anchor, xycoords="axes fraction",
+                      textcoords="axes fraction", annotation_clip=False,
+                      arrowprops={"arrowstyle": "-|>", "color": colour, "lw": 1.5,
+                                  "shrinkA": 0.0, "shrinkB": 0.0})
+        axes.text2D(float(tip[0]) + 0.02, float(tip[1]) + 0.01, label,
+                    transform=axes.transAxes, color=colour, fontsize=8, fontweight="bold")
+
+
 def _draw_scene(axes, tracks: list[dict], *, upto: int | None = None,
-                ghosts: bool = True, drop_lines: bool = True) -> None:
-    """Trails, skeletons, camera path, triad, scale bar — in centimetres."""
+                drop_lines: bool = True) -> None:
+    """Floor grid, current hands, camera path + pose axes, labels.
+
+    Fixed-frame panel in the reference system's style: Z-up, 10 cm ground grid,
+    dashed camera path with the current 视线/+Zc · 右/+Xc · 上/-Yc axes, the
+    current hand skeletons with drop lines, hand-to-camera distance labels, a
+    legend and a frame counter — all in centimetres. A hand is drawn only on
+    frames where that side is valid, and hand trails are not drawn at all: on
+    this footage they read as a wire snarl (the reference panel shows none).
+    """
+    _cjk_font()
+    # the floor plane is fixed over the whole clip so it does not drift as the
+    # video reveals lower points
     floor_z = min(
-        min(float(np.nanmin(tr["joints"][:upto, :, :, 2])),
-            float(np.nanmin(tr["t"][:upto, 2]))) for tr in tracks
+        min(float(np.nanmin(tr["joints"][..., 2])), float(np.nanmin(tr["t"][:, 2])))
+        for tr in tracks
     ) - 0.05  # a little headroom below the lowest point
+    z0 = floor_z * 100.0
+    _floor_grid(axes, tracks, z0)
+    total = max(tr["joints"].shape[0] for tr in tracks)
+    cur = (upto if upto is not None else total) - 1
 
     for tr in tracks:
         alpha = GT_ALPHA if tr["name"] == "GT" else 1.0
         colours = {0: LEFT_COLOUR, 1: RIGHT_COLOUR}
-        # camera path
+        # camera path (dashed) and, for the primary track, the current pose axes
         cam = tr["t"][:upto] * 100.0
         axes.plot(cam[:, 0], cam[:, 1], cam[:, 2], color=CAMERA_COLOUR,
-                  lw=1.6, alpha=alpha)
+                  lw=1.4, ls="--", alpha=alpha)
         axes.scatter(*cam[-1], color=CAMERA_COLOUR, s=28, alpha=alpha, zorder=5)
-        # wrist trails + ghost skeletons + drop lines per hand
+        if tr is tracks[0]:
+            _camera_axes(axes, tr, cur)
+        # the current hand per side: thick skeleton + joint dots + drop line.
+        # Strictly the *current* frame: during a dropout nothing is drawn -
+        # no lingering hand from the last valid frame.
         for hand, colour in colours.items():
-            valid_t = np.where(tr["valid"][:upto, hand])[0]
-            if len(valid_t) < 2:
+            if cur >= tr["valid"].shape[0] or not tr["valid"][cur, hand]:
                 continue
-            wrist = tr["joints"][valid_t, hand, 0, :] * 100.0
-            axes.plot(wrist[:, 0], wrist[:, 1], wrist[:, 2], color=colour,
-                      lw=1.1, alpha=0.85 * alpha)
-            if ghosts:
-                # the hand fan: a skeleton every SKELETON_EVERY frames, clearly
-                # visible - this is the "hand information" of the panel
-                for t in valid_t[::SKELETON_EVERY]:
-                    joints = tr["joints"][t, hand] * 100.0
-                    for parent, child in BONE_PAIRS:
-                        axes.plot(*zip(joints[parent], joints[child]),
-                                  color=colour, lw=0.9, alpha=0.45 * alpha)
-            # the hero: the most recent valid hand, thick, with joint dots
-            last_t = valid_t[-1]
-            joints = tr["joints"][last_t, hand] * 100.0
+            joints = tr["joints"][cur, hand] * 100.0
+            if not np.isfinite(joints).all():
+                continue
             for parent, child in BONE_PAIRS:
                 axes.plot(*zip(joints[parent], joints[child]),
                           color=colour, lw=2.6, alpha=alpha, zorder=6)
@@ -115,27 +207,28 @@ def _draw_scene(axes, tracks: list[dict], *, upto: int | None = None,
                          color=colour, s=10, alpha=alpha, zorder=7)
             axes.scatter(*joints[0], color=colour, s=90, facecolors="none",
                          edgecolors=colour, linewidths=1.6, alpha=alpha, zorder=7)
-            # drop line from the last valid wrist to the floor
-            last = tr["joints"][valid_t[-1], hand, 0, :] * 100.0
+            # drop line from the wrist to the floor
+            wrist = joints[0]
             if drop_lines:
-                axes.plot([last[0], last[0]], [last[1], last[1]],
-                          [last[2], floor_z * 100.0], color=colour, lw=0.7,
+                axes.plot([wrist[0], wrist[0]], [wrist[1], wrist[1]],
+                          [wrist[2], z0], color=colour, lw=0.7,
                           ls="--", alpha=0.6 * alpha)
-            label = f"{'L' if hand == 0 else 'R'} {last[2]:.1f} cm"
-            axes.text(last[0], last[1], last[2] + 3.0, label, color=colour,
+            dist = np.linalg.norm(wrist - tr["t"][cur] * 100.0)
+            label = f"{'L' if hand == 0 else 'R'} {dist:.1f} cm"
+            axes.text(wrist[0], wrist[1], wrist[2] + 3.0, label, color=colour,
                       fontsize=7, alpha=max(alpha, 0.8))
-    # axes triad at the world origin
-    for direction, colour, label in (
-        ((1, 0, 0), "#ff5d5d", "+X"), ((0, 1, 0), "#7ee87e", "+Y"),
-        ((0, 0, 1), "#6da8ff", "+Z"),
-    ):
-        tip = AXIS_LEN_M * 100.0 * np.array(direction)
-        axes.plot(*zip(np.zeros(3), tip), color=colour, lw=1.4)
-        axes.text(*tip, label, color=colour, fontsize=7)
-    # scale bar: 10 cm along +x at the floor corner
-    z0 = floor_z * 100.0
-    axes.plot([0, SCALE_BAR_M * 100.0], [0, 0], [z0, z0], color="#c8ced6", lw=2.0)
-    axes.text(SCALE_BAR_M * 50.0, 0, z0 + 2.0, "10 cm", color="#c8ced6", fontsize=7)
+    # scale bar: 10 cm along +x at a free floor corner
+    x_lim, y_lim, _ = _limits(tracks, None)
+    bx, by = x_lim[0] + 2.0, y_lim[0] + 2.0
+    axes.plot([bx, bx + SCALE_BAR_M * 100.0], [by, by], [z0, z0], color="#c8ced6", lw=2.0)
+    axes.text(bx + SCALE_BAR_M * 50.0, by, z0 + 2.0, "10 cm", color="#c8ced6", fontsize=7)
+    # legend and frame counter, screen-anchored like the reference panel
+    for i, (name, colour) in enumerate((("左手", LEFT_COLOUR), ("右手", RIGHT_COLOUR),
+                                        ("相机", CAMERA_COLOUR))):
+        axes.text2D(0.02, 0.17 - i * 0.05, f"● {name}", transform=axes.transAxes,
+                    color=colour, fontsize=8)
+    axes.text2D(0.02, 0.03, f"帧 {cur + 1} / {total}", transform=axes.transAxes,
+                color="#c8ced6", fontsize=8)
 
 
 def _limits(tracks: list[dict], upto: int | None) -> tuple[tuple, tuple, tuple]:
@@ -171,11 +264,12 @@ def render_static(tracks: list[dict], out_path: Path) -> Path:
     matplotlib.use("Agg", force=True)
     import matplotlib.pyplot as plt
 
-    total = max(tr["joints"].shape[0] for tr in tracks)
     x_lim, y_lim, z_lim = _limits(tracks, None)
     figure = plt.figure(figsize=(13.5, 6.4), facecolor=BACKGROUND)
+    panels = []
     for slot, (elev, azim) in enumerate(((22, -60), (90, -90))):
         axes = figure.add_subplot(1, 2, slot + 1, projection="3d", facecolor=BACKGROUND)
+        panels.append(axes)
         _style_axes(axes)
         _draw_scene(axes, tracks)
         axes.set_xlim(*x_lim); axes.set_ylim(*y_lim); axes.set_zlim(*z_lim)
@@ -191,10 +285,12 @@ def render_static(tracks: list[dict], out_path: Path) -> Path:
             f", p90 {np.percentile(stats, 90):.1f} cm"
         )
     figure.suptitle(
-        f"WORLD SPACE - camera + both hands  [{header}]  |  cm  |  grid 5 cm",
+        f"固定世界系 Z-up（X右 / Y前 / Z上）  [{header}]  |  cm  |  格 10 cm",
         color="#e8ecf0", fontsize=11,
     )
     figure.tight_layout()
+    for axes in panels:
+        _corner_triad(axes)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(out_path, dpi=140, facecolor=BACKGROUND)
     plt.close(figure)
@@ -225,8 +321,9 @@ def render_video(tracks: list[dict], out_path: Path, *, fps: float,
         axes.set_xlim(*x_lim); axes.set_ylim(*y_lim); axes.set_zlim(*z_lim)
         axes.set_box_aspect(span)
         axes.view_init(elev=22, azim=-60)
-        axes.set_title(f"WORLD SPACE  |  frame {t}/{total}  |  cm", color="#e8ecf0", fontsize=10)
+        axes.set_title(f"固定世界系 Z-up  |  帧 {t}/{total}  |  cm", color="#e8ecf0", fontsize=10)
         figure.tight_layout()
+        _corner_triad(axes)
         figure.canvas.draw()
         frame = np.asarray(figure.canvas.buffer_rgba())[:, :, :3]
         writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
@@ -241,6 +338,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--gt", action="store_true", help="overlay the reference trails")
     parser.add_argument("--video", action="store_true", help="also render the time animation")
     parser.add_argument("--video-stride", type=int, default=2, help="every Nth frame in the video")
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="write the PNG here (default: <clip>/visualization/world_space.png; "
+        "the --video animation goes to <stem>_time.mp4 next to it)",
+    )
     args = parser.parse_args(argv)
     try:
         context = build_context(args)
@@ -252,11 +355,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.gt:
             tracks.append(_load("GT", layout.trajectory_dir / "ground_truth.npz"))
         viz = layout.visualization_dir
-        png = render_static(tracks, viz / "world_space.png")
+        target = Path(args.output) if args.output else viz / "world_space.png"
+        png = render_static(tracks, target)
         print(f"wrote {png}")
         if args.video:
             fps = 30.0 / max(1, args.video_stride)
-            video = render_video(tracks, viz / "world_space_time.mp4",
+            video = render_video(tracks, target.with_name(target.stem + "_time.mp4"),
                                  fps=fps, video_stride=args.video_stride)
             print(f"wrote {video}")
         return 0

@@ -3,8 +3,8 @@
 
 One video, two synchronised panels per frame:
 
-* left  - EGO VIEW: the RGB frame with the MANO mesh reprojected (as
-  ``02_hawor.mp4``) plus left/right validity badges;
+* left  - EGO VIEW: the RGB frame with the MANO mesh reprojected plus the
+  21-joint skeleton on top (as ``02_hawor.mp4``) and left/right validity badges;
 * right - WORLD SPACE: the stitched world frame with the camera path and both
   hands (as ``render_world_space.py``), trails growing up to the current frame.
 
@@ -30,7 +30,9 @@ from ego3d_action.cli import base_parser, build_context, fail  # noqa: E402
 from ego3d_action.errors import Ego3DActionError, StageIOError  # noqa: E402
 from ego3d_action.io.serialization import load_npz  # noqa: E402
 from ego3d_action.visualization.overlay import (  # noqa: E402
+    SKELETON_COLOUR,
     draw_hand_mesh,
+    draw_hand_projection,
     require_cv2,
     transcode_to_h264,
 )
@@ -63,16 +65,18 @@ def _ego_intrinsics(viz_dir: Path, frames_dir: Path, size: tuple[int, int]):
     )
 
 
-def _ego_panel(cv2, frame_path: Path, vertices, intrinsics, valid, faces, *, target_total: int) -> np.ndarray:
-    """RGB frame + MANO mesh + validity badges, resized to the panel height."""
+def _ego_panel(cv2, frame_path: Path, vertices, joints, intrinsics, valid, faces, *,
+               target_total: int) -> np.ndarray:
+    """RGB frame + MANO mesh + skeleton + validity badges, resized to panel height."""
     frame = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
     if frame is None:
         raise StageIOError(f"cannot decode {frame_path}")
     hand_valid = np.asarray(valid, dtype=bool) & np.isfinite(vertices).all(axis=(1, 2))
     canvas = draw_hand_mesh(frame, vertices, faces, intrinsics, hand_valid)
+    canvas = draw_hand_projection(canvas, joints, intrinsics, hand_valid, colour=SKELETON_COLOUR)
     badges = f"left: {'yes' if hand_valid[0] else 'NO '}   right: {'yes' if hand_valid[1] else 'NO '}"
     strip = np.full((HEADER_HEIGHT, canvas.shape[1], 3), EGO_HEADER_BG, dtype=np.uint8)
-    cv2.putText(strip, f"EGO VIEW - MANO reprojected   {badges}", (8, 18),
+    cv2.putText(strip, f"EGO VIEW - MANO mesh + skeleton   {badges}", (8, 18),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (240, 240, 240), 1, cv2.LINE_AA)
     canvas = np.vstack([strip, canvas])
     # the world panel (strip + panel_h) sets the total height; match it
@@ -93,8 +97,9 @@ def main(argv: list[str] | None = None) -> int:
             return fail("--clip is required")
         cv2 = require_cv2()
         viz = layout.visualization_dir
-        hand = load_npz(layout.hand_path, required=("vertices_camera", "valid"))
+        hand = load_npz(layout.hand_path, required=("vertices_camera", "joints_camera", "valid"))
         vertices = np.asarray(hand["vertices_camera"], dtype=np.float64)
+        joints = np.asarray(hand["joints_camera"], dtype=np.float64)
         hand_valid = np.asarray(hand["valid"], dtype=bool)
         tracks = [world._load("PRED", layout.trajectory_dir / "trajectory.npz")]
         if args.gt:
@@ -118,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
         out_path = viz / "viewer.mp4"
         writer = None
         for t in range(1, total + 1, max(1, args.video_stride)):
-            left = _ego_panel(cv2, frames[t - 1], vertices[t - 1], intrinsics,
+            left = _ego_panel(cv2, frames[t - 1], vertices[t - 1], joints[t - 1], intrinsics,
                               hand_valid[t - 1], faces,
                               target_total=panel_h + HEADER_HEIGHT)
             figure = plt.figure(figsize=(panel_w / 100, panel_h / 100), dpi=100,
@@ -131,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
             axes.view_init(elev=22, azim=-60)
             axes.set_title("WORLD SPACE - camera + both hands  |  cm", color="#e8ecf0", fontsize=9)
             figure.tight_layout()
+            world._corner_triad(axes)
             figure.canvas.draw()
             rgba = np.asarray(figure.canvas.buffer_rgba())[:, :, :3]
             plt.close(figure)

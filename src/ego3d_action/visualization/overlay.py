@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -26,6 +25,7 @@ Array = np.ndarray
 
 LEFT_COLOUR = (60, 76, 231)  # BGR: left hand
 RIGHT_COLOUR = (76, 177, 34)  # BGR: right hand
+SKELETON_COLOUR = (240, 240, 240)  # BGR: near-white, reads on top of the shaded mesh
 EDGES = bone_pairs()
 
 
@@ -87,8 +87,14 @@ def draw_hand_projection(
     valid: Array,
     *,
     radius: int = 2,
+    colour: Sequence[int] | None = None,
 ) -> Array:
-    """Project camera-space joints into the image and draw the 21-joint skeleton."""
+    """Project camera-space joints into the image and draw the 21-joint skeleton.
+
+    ``colour`` overrides the per-hand left/right colours with one BGR tuple
+    for both hands - used when the skeleton is drawn on top of the mesh, where
+    the hand colours would blend into it.
+    """
     cv2 = require_cv2()
     canvas = np.asarray(frame).copy()
     joints = np.asarray(joints_camera, dtype=np.float64)
@@ -102,14 +108,14 @@ def draw_hand_projection(
     for hand in range(2):
         if not valid[hand] or not np.isfinite(pixels[hand]).all():
             continue
-        colour = LEFT_COLOUR if hand == 0 else RIGHT_COLOUR
+        hand_colour = tuple(colour) if colour is not None else (LEFT_COLOUR if hand == 0 else RIGHT_COLOUR)
         for parent, child in EDGES:
             p0 = tuple(np.round(pixels[hand, parent]).astype(int))
             p1 = tuple(np.round(pixels[hand, child]).astype(int))
-            cv2.line(canvas, p0, p1, colour, 2, cv2.LINE_AA)
+            cv2.line(canvas, p0, p1, hand_colour, 2, cv2.LINE_AA)
         for joint in range(joints.shape[1]):
             centre = tuple(np.round(pixels[hand, joint]).astype(int))
-            cv2.circle(canvas, centre, radius, colour, -1, cv2.LINE_AA)
+            cv2.circle(canvas, centre, radius, hand_colour, -1, cv2.LINE_AA)
     return canvas
 
 
@@ -184,8 +190,6 @@ def draw_hand_mesh(
                 int(c) for c in (base * shade[face_index])
             ))
     return canvas
-
-
 def _video_writer(cv2: object, path: Path, fps: float, size: tuple[int, int]) -> object:
     writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
     if not writer.isOpened():
@@ -288,8 +292,10 @@ def write_hand_video(
     """Write ``02_hawor.mp4``: RGB + projected hands.
 
     With ``vertices_camera`` (``[T, 2, V, 3]``) and per-hand ``faces`` the full
-    MANO mesh is rasterised (the MINT-style overlay); without them the writer
-    falls back to the 21-joint skeleton.
+    MANO mesh is rasterised (the MINT-style overlay) with the 21-joint skeleton
+    drawn on top in :data:`SKELETON_COLOUR` - the mesh gives the shape, the
+    skeleton the estimated articulation; without vertices the writer falls back
+    to the skeleton alone.
     """
     cv2 = require_cv2()
     frames = list(frame_paths)
@@ -323,6 +329,10 @@ def write_hand_video(
                 frame_valid = camera_valid & np.isfinite(vertices[index]).all(axis=(1, 2))
                 canvas = draw_hand_mesh(
                     frame, vertices[index], faces, intrinsics[index], frame_valid
+                )
+                canvas = draw_hand_projection(
+                    canvas, joints[index], intrinsics[index], camera_valid,
+                    colour=SKELETON_COLOUR,
                 )
             else:
                 canvas = draw_hand_projection(frame, joints[index], intrinsics[index], camera_valid)
