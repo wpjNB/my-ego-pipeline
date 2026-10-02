@@ -245,13 +245,11 @@ def _camera_intrinsics(layout) -> np.ndarray:
     metadata = clip_metadata(layout)
     width = int(metadata.get("width", 320))
     height = int(metadata.get("height", 240))
-    for path in sorted(layout.camera_windows_dir.glob("*.npz")):
-        data = load_npz(path, required=("intrinsics", "depth"))
-        depth = np.asarray(data["depth"])
-        source = (int(depth.shape[2]), int(depth.shape[1]))  # (width, height)
-        return scale_intrinsics(
-            np.asarray(data["intrinsics"])[0], source_size=source, target_size=(width, height)
-        )
+    from ego3d_action.camera.depth import canonical_intrinsics
+
+    K = canonical_intrinsics(layout.camera_windows_dir, (width, height))
+    if K is not None:
+        return K
     from ego3d_action.testing.synthetic import make_intrinsics
 
     return make_intrinsics(width, height)
@@ -289,22 +287,14 @@ def resolve_focal(layout, config) -> tuple[float | None, str]:
     width = int(metadata.get("width", 320))
     height = int(metadata.get("height", 240))
 
-    # Robust aggregate over the windows: per-window estimates scatter (the
-    # first window is not privileged), so take the median focal across all
-    # windows rather than whichever sorts first.
-    focals = []
-    for path in sorted(layout.camera_windows_dir.glob("*.npz")):
-        data = load_npz(path, required=("intrinsics", "depth"))
-        depth = np.asarray(data["depth"])
-        source = (int(depth.shape[2]), int(depth.shape[1]))
-        scaled = scale_intrinsics(
-            np.asarray(data["intrinsics"])[0], source_size=source, target_size=(width, height)
-        )
-        candidate = float(scaled[0, 0])
-        if np.isfinite(candidate) and candidate > 0.0:
-            focals.append(candidate)
-    if focals:
-        return float(np.median(focals)), "Phase 3 camera windows"
+    # One canonical K per clip (median across the windows); the overlays
+    # resolve the exact same matrix (see ego3d_action.camera.depth), so the
+    # render always draws through the camera the stage reconstructed in.
+    from ego3d_action.camera.depth import canonical_intrinsics
+
+    K = canonical_intrinsics(layout.camera_windows_dir, (width, height))
+    if K is not None and np.isfinite(K[0, 0]) and K[0, 0] > 0.0:
+        return float(K[0, 0]), "Phase 3 camera windows (canonical median)"
 
     return None, "unavailable"
 

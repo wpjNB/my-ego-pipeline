@@ -54,6 +54,37 @@ class Correspondence:
         return int(self.points_src.shape[0])
 
 
+def canonical_intrinsics(windows_dir, frame_size: tuple[int, int]):
+    """The clip's single intrinsic matrix: per-element median of the windows.
+
+    VGGT estimates intrinsics per camera window and the estimates scatter
+    (measured 2026-10-02: first-window vs median up to 7.7 % on the official
+    clips, 5.9 % on hot3d_ep000). Reconstruction (the hand stage's focal) and
+    rendering (the debug overlays) must resolve the SAME matrix, or the render
+    draws through a different camera than the one the prediction was built in
+    - a whole-image scale/shift about the principal point that grows with the
+    distance from the image centre. The median is robust against the
+    occasional outlier window. Returns ``None`` when the clip has no windows.
+    """
+    from pathlib import Path as _Path  # noqa: PLC0415
+
+    from ..io.serialization import load_npz  # noqa: PLC0415
+
+    matrices = []
+    for path in sorted(_Path(windows_dir).glob("*.npz")):
+        data = load_npz(path, required=("intrinsics", "depth"))
+        depth = np.asarray(data["depth"])
+        source = (int(depth.shape[2]), int(depth.shape[1]))
+        matrices.append(
+            scale_intrinsics(
+                np.asarray(data["intrinsics"])[0], source_size=source, target_size=frame_size
+            )
+        )
+    if not matrices:
+        return None
+    return np.median(np.stack(matrices), axis=0)
+
+
 def scale_intrinsics(intrinsics: Array, *, source_size: tuple[int, int], target_size: tuple[int, int]) -> Array:
     """Rescale intrinsics from ``source_size`` to ``target_size`` (w, h)."""
     k = np.asarray(intrinsics, dtype=np.float64).copy()

@@ -53,18 +53,18 @@ HEADER_HEIGHT = 26
 
 
 def _ego_intrinsics(viz_dir: Path, frames_dir: Path, size: tuple[int, int]):
-    """The overlay intrinsics: the pipeline's own estimate (Phase 3 windows),
-    never the reference calibration - the panel renders the prediction and
-    must project it exactly as the stage did (see run_hand.resolve_focal)."""
-    from ego3d_action.camera.depth import scale_intrinsics
+    """The overlay intrinsics: the clip's canonical estimate (median across
+    the Phase 3 windows) - the exact matrix run_hand.resolve_focal hands to
+    the reconstruction, never the reference calibration and never a single
+    (possibly outlier) window."""
+    from ego3d_action.camera.depth import canonical_intrinsics
 
-    window = sorted(viz_dir.parent.glob("camera/windows/*.npz"))[0]
-    data = load_npz(window, required=("intrinsics", "depth"))
-    return scale_intrinsics(
-        np.asarray(data["intrinsics"])[0],
-        source_size=(int(data["depth"].shape[2]), int(data["depth"].shape[1])),
-        target_size=size,
-    )
+    K = canonical_intrinsics(viz_dir.parent / "camera" / "windows", size)
+    if K is not None:
+        return K
+    from ego3d_action.testing.synthetic import make_intrinsics
+
+    return make_intrinsics(*size)
 
 
 def _ego_panel(cv2, frame_path: Path, vertices, joints, intrinsics, valid, faces, *,

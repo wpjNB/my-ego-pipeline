@@ -648,7 +648,23 @@ def test_resolve_focal_prefers_real_intrinsics_over_the_600px_default(
         depth=np.zeros((4, 256, 256), dtype=np.float32),
     )
     focal, source = runner.resolve_focal(layout, _Config({}))
-    assert abs(focal - 221.14) < 0.05 and source == "Phase 3 camera windows"
+    assert abs(focal - 221.14) < 0.05 and source == "Phase 3 camera windows (canonical median)"
+
+    # 3c. an outlier second window must not move either the stage focal or the
+    #     overlay K: both resolve the per-element MEDIAN across windows, so
+    #     the reconstruction and the render always share one camera.
+    np.savez(
+        layout.window_path(4, 8),
+        intrinsics=np.broadcast_to(
+            np.array([[400.0, 0.0, 127.9], [0.0, 400.0, 127.9], [0.0, 0.0, 1.0]]), (4, 3, 3)
+        ).copy(),
+        depth=np.zeros((4, 256, 256), dtype=np.float32),
+    )
+    median_focal = (110.57 + 400.0) / 2 * 512 / 256
+    focal, source = runner.resolve_focal(layout, _Config({}))
+    assert abs(focal - median_focal) < 0.05, (focal, median_focal)
+    overlay_K = runner._camera_intrinsics(layout)
+    assert abs(overlay_K[0, 0] - median_focal) < 0.05, overlay_K
 
     # 4. an explicit config value wins over everything
     focal, source = runner.resolve_focal(layout, _Config({"hand.focal": 300.0}))
