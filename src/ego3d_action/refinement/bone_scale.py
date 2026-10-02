@@ -18,7 +18,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..errors import StageIOError
-from ..hand.mano import JOINT_PARENTS, NUM_JOINTS, bone_pairs
+from ..hand.mano import NUM_JOINTS, bone_pairs
 
 logger = logging.getLogger(__name__)
 

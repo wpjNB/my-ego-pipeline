@@ -31,7 +31,6 @@ from ego3d_action.datasets.hot3d_gt import convert_episode, write_episode  # noq
 from ego3d_action.datasets.lerobot import LeRobotDataset  # noqa: E402
 from ego3d_action.errors import Ego3DActionError  # noqa: E402
 from ego3d_action.hand.mano_model import load_mano_models  # noqa: E402
-from ego3d_action.io.artefacts import ClipLayout  # noqa: E402
 from ego3d_action.io.frames import preprocess_video  # noqa: E402
 from ego3d_action.io.serialization import save_json  # noqa: E402
 

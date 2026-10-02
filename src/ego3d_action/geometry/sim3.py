@@ -213,7 +213,6 @@ def estimate_sim3_robust(
     rng = np.random.default_rng(random_state)
     best_mask: Array | None = None
     best_score = -np.inf
-    best_rmse = np.inf
 
     for _ in range(max(1, ransac_iterations)):
         idx = rng.choice(n, size=sample_size, replace=False)
@@ -230,7 +229,6 @@ def estimate_sim3_robust(
         if score > best_score:
             best_score = score
             best_mask = mask
-            best_rmse = float(np.sqrt(np.mean(residuals[mask] ** 2))) if mask.any() else np.inf
 
     if best_mask is None:
         raise InsufficientDataError("RANSAC found no valid Sim(3) hypothesis")

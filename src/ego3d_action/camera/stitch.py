@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..errors import InsufficientDataError, StageIOError
+from ..errors import StageIOError
 from ..geometry.sim3 import Sim3, estimate_sim3_robust
 from ..geometry.transforms import rotation_angle, rotation_slerp
 from .camera_pose import normalize_to_first_camera

@@ -151,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     or context.config.get("backends.precision", None),
                     crop_size=context.config.get("hand.crop_size", None),
+                    box_pad=context.config.get("detection.box_padding", None),
                 )
         windows = [hawor.load_hand_window(path) for path in paths]
 
@@ -175,7 +176,6 @@ def main(argv: list[str] | None = None) -> int:
         )
         hand_arrays = {
             "joints_camera": joints_smooth,
-            "joints_camera": blended.joints_camera,
             "valid": blended.valid,
             "confidence": blended.confidence,
             "root_rot": blended.root_rot,
