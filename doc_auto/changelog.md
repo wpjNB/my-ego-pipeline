@@ -1,5 +1,258 @@
 # Changelog
 
+## 2026-10-02 12:30 (+08:00) - WiLoR hand backend, GT-alignment scoring, viewer overhaul, lint pass
+
+**WiLoR is now the hand backend for `hot3d_ep000`** (HaWoR stays available and
+is still the backend for `hot3d_ep003`):
+
+- `backends/wilor_hand_runner.py` + `scripts/run_hand_wilor.py` reconstruct
+  every tracked hand per frame with WiLoR and write the ordinary
+  `hand/hand_camera.npz` contract. Three calibrated details carry the metric
+  accuracy: the crop→camera translation uses the **physical** VGGT focal
+  (227.5 px @ 512, depth ratio 0.97 vs GT - not the training 5000/256
+  convention), landmarks need the model root offset added (~96 mm; forgetting
+  it costs 8 cm at the wrist), and the wrapper's joints are openpose-remapped
+  and must be inverted through `joint_map` (a test pins the direction - the
+  first implementation had it backwards). Left hands are mirrored crops:
+  x-flip on vertices/landmarks, `diag(-1,1,1)`-conjugated root rotation.
+- `hand.wilor_rescale: 2.5` (the checkout's own `ViTDetDataset` default; the
+  demo's 2.0 starves the wrist of forearm context, 3.0 dilutes the hand -
+  swept on ep000 overlays). Coverage 88.0 % (same as HaWoR); frame-to-frame
+  wrist jitter 0.65 vs 0.84 cm (visibly steadier); wrist pose/orientation
+  remains the residual weakness (the benchmark's GO-p ≈ 26° for WiLoR on
+  HOT3D).
+
+**`--align-gt` scoring mode** (`evaluate_hot3d.py`, `render_gt_vs_pred.py`,
+`src/ego3d_action/evaluation/gt_align.py`): the mirror's hand GT is rigidly
+misplaced relative to its own images (quantified: the PRED-GT wrist gap is
+1.7-7 cm of *constant* camera-frame offset - on ep000's right hand 97 % of
+the gap - with only 2.4-3.7 cm per-frame residual). The flag estimates that
+constant from the **wrist** joint in the GT camera frame and removes it
+before scoring/rendering. An all-joint median was rejected: it absorbs
+hand-shape differences and invented 12-14 cm offsets. Aligned ep000 wrist
+error 69.6 → 58.3 mm; on ep003 the dominant error is the *time-varying*
+camera trajectory (125 mm), which no constant alignment can remove - both
+variants are reported. The GT defect was independently re-confirmed by the
+cross-participant run below ("the hand/wrist reference projects into the
+ceiling").
+
+**Runner guards** (both born from real failures this cycle): the WiLoR
+detection runner refuses to write an artefact where every frame has
+candidates but every box is zero-area (a wedged GPU returns zeros for every
+kernel - cuda:1/cuda:2 on this host did exactly that and the tracker read it
+as 0 % coverage), and HaWoR's `est_focal.txt` cache marker now records a
+sha1 of the tracked boxes, so detection changes can no longer silently reuse
+stale reconstructions the way focal/box-pad changes once did.
+
+**Visualisation**: the ego overlay draws the mesh **and** the 21-joint
+skeleton (white on the shaded mesh); the world panel follows the reference
+layout (10 cm ground grid, dashed camera path with 视线/+Zc · 右/+Xc · 上/-Yc
+pose axes, wrist drop lines, hand-to-camera labels, Chinese legend, frame
+counter, screen-anchored X/Y/Z triad) and canonicalises the contract's
+first-frame-camera world (x right / y down / z forward) to the reference's
+fixed X右/Y前/Z上 display frame - the panel used to be upside down. Hands are
+drawn strictly on frames where that side is valid (no lingering last-known
+hand), and hand trails are gone.
+
+**Config**: `detection.min_confidence 0.75 → 0.65` on this host (measured:
+ep000 coverage 63.6 → 88.0 % at flat MPJPE; ep003 coverage 69.3 → 82.4 % at
++4.8 % MPJPE, the cost sitting in ~19 recovered low-confidence frames; no
+phantom divergence - every wrist stays within 64 cm of the camera). The
+0.75 spec and its phantom-hand rationale remain the default elsewhere.
+
+**Repo hygiene**: fixed a real bug where `run_hand.py`'s `hand_arrays`
+carried a duplicate `joints_camera` key, silently discarding the configured
+smoothing pass; removed the now-unused `align_hand_to_box` display shim, a
+duplicated `BackendExecutionError`, an undefined `Path` in
+`camera/window.py`, and a dozen dead imports/locals flagged by pyflakes
+(431 tests green after).
+
+## 2026-10-01 23:05 (+08:00) - first cross-participant run: 15 HOT3D-Clips clips, two batch defects fixed
+
+To check that the pipeline is not tuned to its three 512×512 episodes, a
+15-clip subset of the repo's HOT3D-Clips mirror (three participants, full
+1408×1408, `configs/clips.cross_subset.yaml`) ran the complete real chain on
+the three P100s. Everything was scored against the only valid reference this
+mirror ships - camera poses (the hand/wrist reference projects into the
+ceiling, re-confirmed visually). Result: the near-static clips validate the
+chain end-to-end (0.42°/7 mm and 1.94°/24 mm median camera error, matching the
+importer's own 7 mm check), the 15-clip median is 34.8°/148 mm with the
+documented caveat that the mirror's `camera.json` itself drifts 7-27° during
+fast head rotation; hand detection at full resolution is much stronger than on
+the old episodes (10/15 clips ≥ 80 % both hands). Hand-side quality is judged
+by coverage and the spot-check renders (`gt_vs_pred` on the best/worst clips;
+predicted wrists land on the real wrists, the GT markers do not). Full table
+and caveats in `doc_auto/ablation.md`.
+
+Three defects surfaced and are fixed:
+
+1. **Unsharded batch runs were broken**: `build_command` stamped *every*
+   whole-clip hand unit with `--blend-only`, so `run_batch.py` without
+   `--shards` never ran HaWoR and failed each clip with "HaWoR window(s) are
+   missing". The join is now an explicit `UnitSpec.mode`
+   (`full` / `blend-only` / `reuse`) set only by the sharded plan's join
+   units; `unit_argument_signature` and the command builder read it, and the
+   regression is pinned in `tests/test_batch.py`. Existing provenance markers
+   for whole hand/camera units change hash once and recompute.
+2. **One-sided clips crashed HaWoR**: `hawor_video.py` concatenates each
+   hand's track entries, so a clip where one hand is never detected died with
+   "need at least one array to concatenate". `hawor_tracks_from_detection` now
+   drops the empty hand, and `hawor_runner` short-circuits a both-hands-empty
+   clip to an all-invalid result (never-fabricate preserved); both paths
+   tested in `tests/test_backend_conversions.py`.
+3. **Render with intrinsics-less references**: `render_gt_vs_pred.py` fell over
+   the HOT3D-Clips mirror's NaN `camera_K`; it now falls back to Phase 3's
+   window intrinsics.
+
+Suite: 431 passed, 1 skipped. The remaining 120 HOT3D-Clips clips run with the
+same command once `--manifest` points at them (about 3.5 h on three P100s).
+
+## 2026-10-01 22:35 (+08:00) - P3 tuning surface: the reference UI's knobs, and what they buy on our data
+
+The reference product exposes P3 as `q / r / beta` (q up = follows the hand
+more, r/beta up = smoother; recommended q 0.4-1.0, r 0.3-1.0, beta 0.2-3.0,
+safe q/r 0.1-2.0, beta 0-5). `configs/hot3d_p100.yaml` and
+`configs/unified.yaml` now carry that block explicitly, with the reference
+UI's default (`ukf_q 0.7 / ukf_r 0.5 / ukf_beta 0.3`, "lighter smoothing")
+and the guidance as comments; `run_refine.py` records the resolved
+`ukf_q/r/beta/rts` in `trajectory/metadata.json`, so an artefact always says
+how it was smoothed.
+
+Swept four sets on both episodes (each a full refine run from the same
+`trajectory_raw.npz`; table in `doc_auto/ablation.md`). The finding that
+decides the default: **every set lands within 0.6 mm MPJPE** - the knobs buy
+smoothness, not accuracy (wrist accel: baseline 6.7/8.8 and 13.0/13.7 mm;
+follow 4.8/6.5 and 9.1/10.0; shipped 3.2/4.1 and 5.2/5.8; library 0.6/0.6/2.0
+2.8/3.6 and 4.1/4.5; heavy 0.5/1.0/3.0 2.7/3.0 and 3.4/3.6). Heavier sets
+measure weakly better on all three columns here, so shipping the reference
+UI's default is a legibility choice, not a measured penalty - the heavier
+library set is one config edit away and both are inside the reference's
+recommended ranges. Canonical `trajectory.npz` regenerated with the shipped
+defaults; `gt_vs_pred.mp4` (both clips) and `world_space.png/_time.mp4`
+re-rendered from them. Sweep artefacts: `data/hot3d/_p3_sweep/`; the
+`outputs/` directory this project used for reports was cleared during the
+session, so evaluation JSONs now live beside the artefacts
+(`data/hot3d/<clip>/trajectory/eval_*.json`).
+
+## 2026-10-01 22:05 (+08:00) - P3: the reference UKF + RTS smoother, and P2/P3 measured on one source
+
+The reference chain's last post-processing stage is now implemented:
+`refinement/ukf_smooth.py` ports `smooth_ukf_cam` from the Wuji/MINT
+reference (`wuji-ego-mint/ego_pipeline/data_cleaning/cleaning_modules/ukf_cam_smoothing.py`,
+which `mint/inference/hand_smoothing.py` mirrors) with the logic unchanged -
+per-channel constant-velocity UKF `[value, velocity]`, observation scale from
+the MAD of second differences over sqrt(6), speed-adaptive observation noise
+over the wrist channels, unscented RTS backward pass, `q = r = 0.6`,
+`beta = 2.0`, `min_valid = 4`. It runs as the last Phase-6 stage in camera
+space, per hand, over the valid frames only (a hole is a larger `dt`; missing
+frames are neither read nor written). `--no-ukf-smooth` disables it;
+`refinement.ukf_q/r/beta/rts` override the defaults through `configs/*.yaml`.
+Reduction to this project's contract: the reference smooths MANO translation,
+root quaternion, 15 pose rotvecs and betas; our contract carries 21 joint
+positions (the MANO fields are placeholders), so the smoother runs on the 63
+joint channels - the position part of the reference filter.
+
+Measured on one source (both episodes re-run 2026-10-01 with box padding; the
+three variants all come from the same `trajectory_raw.npz`, so the only
+difference is the flag set):
+
+| Episode / variant | MPJPE | pred-only | Coverage | Wrist accel (L/R) |
+| --- | --- | --- | --- | --- |
+| ep000 baseline -> +P2 -> +P2+P3 | 161.59 -> 162.77 -> **162.57 mm** | 161.56 -> 161.36 mm | 63.56 -> 65.33 % | 6.7/8.8 -> **2.8/3.6 mm** |
+| ep003 baseline -> +P2 -> +P2+P3 | 185.66 -> 185.65 -> **185.29 mm** | 185.64 -> 185.27 mm | 69.33 -> 71.78 % | 13.0/13.7 -> **4.1/4.5 mm** |
+
+P3 is a jitter killer, not an MPJPE mover: on real HaWoR output the aggregate
+moves < 0.5 mm while the frame-to-frame wrist acceleration (median of the mean
+per-joint second difference) drops 58 % / 68 %. The mock tells the opposite
+story for the same reason - its corruption is per-frame white noise, so the
+full chain now goes 24.64 mm -> **12.49 mm** at 92.00 % coverage (P2 done
+09-29, real-data P2 effect re-confirmed here: +1.8/+2.5 pp coverage for a
+~1 mm MPJPE trade, predicted frames untouched).
+
+Renders refreshed from the canonical P2+P3 trajectory (both clips):
+`gt_vs_pred.mp4` (regenerated in place) and new `world_space_p2p3.png` /
+`world_space_p2p3_time.mp4`; a four-way still set lands in
+`gt_vs_pred_stills/`. `render_gt_vs_pred.py` and `render_world_space.py`
+gained `--output` so a variant render cannot overwrite the canonical one.
+`v_base`/`v_p2`/`v_p2p3` variants stay on disk as the ablation evidence, and
+`trajectory.npz` is now the P2+P3 output. New tests:
+`tests/test_ukf_smooth.py` (10 cases: reference-behaviour pins, gap/edge
+preservation, masking, parameter validation). Suite: **420 passed**, 1 skipped.
+
+## 2026-09-30 21:30 (+08:00) - 2D-aligned EGO panel: why the mesh "missed" the hand, and the display fix
+
+User-visible issue: in the viewer's EGO panel the mesh looked like it was not
+tracking the hand. Measured: the mesh projects to only 63-77 % of its own
+detection box's width, offset 13-16 px (p90 31-40 px) from the box centre.
+Mechanism: the finger-depth bias (+10-27 cm away from camera) compresses the
+projection toward the principal point - for hands near the frame edge the
+mesh visibly shrinks toward the image centre and reads as "tracking is off",
+even though the 2D tracking itself is fine (xy error 5-13 mm).
+
+Fix, display-only: `overlay.align_hand_to_box` scales each hand about its
+centroid so its projected width matches the tracked box, then re-anchors the
+projected centroid onto the box centre. Wired into the viewer's EGO panel
+(header now reads "2D-aligned"); metric artefacts are untouched and the depth
+bias remains visible in the WORLD panel, where it belongs. With the
+alignment, both hands sit on their hands at plausible scale with the grasp
+articulation visible (verified on ep003 frames 90/210).
+
+Test suite: **410 passed**, 1 skipped.
+
+## 2026-09-30 19:40 (+08:00) - HaWoR run standalone: our integration beats the native path
+
+Ran the HaWoR checkout's own demo pipeline end-to-end on the original sample
+video, as upstream intended (new `scripts/run_hawor_standalone.py`): native
+detector+tracker (WiLoR's YOLO `detector.pt` - the exact file HaWoR's README
+links), native focal handling, native motion estimation + infiller, demo's
+convention flips. Substitutions, both documented: DROID-SLAM replaced by the
+VGGT-derived camera npz (no lietorch on this host) and the aitviewer render
+replaced by our mesh rasteriser. Getting it running needed four compatibility
+shims our runner already carried (pytorch3d renderer stub, torch-2.6
+checkpoint allowlist, chumpy numpy aliases, weights symlinks into the
+checkout) plus four demo-arg fixes - the upstream demo is not runnable as
+shipped on this environment.
+
+Result on hot3d_ep000, same evaluation as the integrated pipeline
+(centroid-aligned, GT joints to nearest native vertex): articulation is fine
+(median 13 mm right / 21 mm left) but the whole hand sits **+110-116 mm too
+far from the camera** with an inflated z extent (145 vs 84 mm) - the same
+away-from-camera finger-depth signature our integrated feed shows, and the
+native render is visibly worse (meshes floating off-hand; its tracker also
+loses hands our pipeline keeps). The reference system's 32.35 mm
+camera-space error remains the full-quality-input target.
+
+Conclusion: the depth weakness is HaWoR-intrinsic on this 512x512 footage,
+not an artifact of our integration - our wrapper (WiLoR detection,
+conservative tracking, box padding, VGGT focal) strictly improves on the
+native path here. Outputs: `outputs/hawor_standalone/` (npz + overlay video).
+## 2026-09-30 17:10 (+08:00) - "why does the hand look bad": measured, and the box-padding fix
+
+Full forensic chain on the camera-space hands (the EGO VIEW panel), after the
+user called the HaWoR overlay out:
+
+1. Wrist 29-57 mm, xy 5-13 mm - placement is fine. The failure is **depth**:
+   per-joint z error grows monotonically from the wrist (+1 cm) to the
+   fingertips (+22-27 cm), always biased away from the camera. Present in
+   HaWoR's raw motion-estimation output - none of our stages inject it.
+2. Root cause (measured): the tracked boxes are ~27 % narrower than the hand,
+   the 256 px crops cut the fingers, and HaWoR guesses hidden-finger depth.
+   New `detection.box_padding` (host configs: 1.5; runner flag `--box-pad`)
+   widens boxes about their centres: finger-z bias -20 %, Action-MPJPE
+   **187.9 -> 161.6 mm** on ep000, 188.5 -> 185.6 mm on ep003. Wrist trades up
+   slightly (38 -> 57 mm).
+3. Cache correctness: HaWoR short-circuits on a matching `est_focal.txt`, so
+   the first padding attempt silently reproduced the old hands. The marker is
+   now `{focal, box_pad}` JSON and the cache drops when either changes
+   (first-run keep semantics preserved; regression-tested).
+4. Hard floor documented: 512x512 source footage (2.75x below the Aria
+   sensor's native resolution) with motion blur - the residual ~10 cm
+   fingertip-z bias is input-quality-bound. Native-resolution re-import or a
+   stronger hand model are the next levers; the reference system's 32.35 mm
+   camera-space error ran on its own episodes at full quality.
+
+Test suite: **410 passed**, 1 skipped.
+
 ## 2026-09-30 15:05 (+08:00) - combined EGO | WORLD viewer, after the Wuji reference
 
 Studied the reference ecosystem's own visualisation stack before building:

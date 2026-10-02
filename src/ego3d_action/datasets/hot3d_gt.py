@@ -278,7 +278,6 @@ def _joints_from_mano(
     replaces. A ``False`` from :func:`landmarks_match_topology` is logged as a
     warning - it usually means the landmark mapping disagrees with the model.
     """
-    total = reference_wrist.shape[0]
     joints = reference_wrist.copy()
     mirrored_any = False
     for hand, side in enumerate(("left", "right")):

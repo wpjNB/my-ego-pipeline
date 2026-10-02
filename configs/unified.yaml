@@ -63,6 +63,12 @@ detection:
   # wrist slightly better - see doc_auto/ablation.md). Continuity wins here.
   min_confidence: 0.75
   max_gap: 8
+  # Widen tracked boxes before HaWoR: the tracker's tight boxes cut fingers
+  # out of the 256px crops, and HaWoR then guesses the hidden finger depth
+  # (up to +25 cm away-from-camera at the fingertips). 1.5x measured on
+  # hot3d_ep000 (2026-09-30): finger-z bias down ~20%, Action-MPJPE
+  # 187.9 -> 161.6 mm. Wrist error trades up slightly (38 -> 57 mm).
+  box_padding: 1.5
   iou_threshold: 0.20
 
 hand:
@@ -104,6 +110,15 @@ refinement:
   bone_scale_reference: mean  # the reference recipe (blog ablation: mean wins, median regressed)
   wrist_depth_lambda: 0.2
   wrist_depth_max_change: null
+  # P2 short-gap interpolation: longest missing run that is filled.
+  gap_fill_max_frames: 12
+  # P3 UKF + unscented RTS (reference UI defaults, "lighter smoothing").
+  # q up = follows the hand more; r/beta up = smoother.
+  # Recommended q 0.4-1.0, r 0.3-1.0, beta 0.2-3.0; safe q/r 0.1-2.0, beta 0-5.
+  ukf_q: 0.7
+  ukf_r: 0.5
+  ukf_beta: 0.3
+  ukf_rts: true
 
 evaluation:
   dataset: hot3d

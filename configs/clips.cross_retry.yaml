@@ -1,0 +1,14 @@
+{
+  "clips": [
+    {
+      "clip": "P0001_10a27bf7_c000009",
+      "from_stage": "detection",
+      "num_frames": 81
+    },
+    {
+      "clip": "P0002_2ea9af5b_c000024",
+      "from_stage": "detection",
+      "num_frames": 81
+    }
+  ]
+}

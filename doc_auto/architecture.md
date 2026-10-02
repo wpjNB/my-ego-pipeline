@@ -90,11 +90,11 @@ stand-in used for CPU-only runs and tests).
 | --- | --- | --- | --- |
 | 0 preprocess | `io/frames.py`, `io/video.py` | `frames/`, `metadata.json` | ffmpeg/ffprobe via subprocess, resumable |
 | 1 detection | `detection/wilor.py`, `detection/tracker.py` | `detection/detection.npz` | conservative tracking is model-free |
-| 2 hand | `hand/hawor.py`, `hand/temporal_blend.py` | `hand/hand_camera.npz` | 16/8 windows, linear + SLERP blend |
+| 2 hand | `hand/hawor.py`, `hand/temporal_blend.py` | `hand/hand_camera.npz` | 16/8 windows, linear + SLERP blend, binomial smoothing pass |
 | 3 camera | `camera/vggt_omega.py`, `camera/window.py` | `camera/windows/*.npz` | 416 px / 200 frames / 40 overlap |
 | 4 stitch | `camera/depth.py`, `camera/stitch.py`, `geometry/*` | `camera/stitched_camera.npz`, `stitched/sim3_transforms.npz` | depth-derived Sim(3) + linear blending |
 | 5 fusion | `fusion/trajectory.py` | `trajectory/trajectory_raw.npz` | `p_w = R_c2w p_c + t_c2w` |
-| 6 refine | `refinement/*` | `trajectory/trajectory.npz` | short-gap interpolation (P2), camera filter, bone scale, wrist depth |
+| 6 refine | `refinement/*` | `trajectory/trajectory.npz` | short-gap interpolation (P2), camera filter, bone scale, wrist depth, UKF + RTS smoothing (P3) |
 | 7 evaluate | `evaluation/*` | report | Action-MPJPE / Coverage / FPS |
 
 ## Batch execution (offline)
@@ -142,7 +142,11 @@ two stages can disagree about a path.
 ## Deliberate omissions
 
 * No wide-window Gaussian smoothing of hand trajectories
-  (`refinement/__init__.py` documents why).
+  (`refinement/__init__.py` documents why). What does run: one ``[1, 2, 1] / 4``
+  binomial pass inside the Phase-2 blend (``hand.smooth_passes``) and the
+  reference's constant-velocity UKF + unscented RTS as the last Phase-6
+  stage (``refinement/ukf_smooth.py``, P3) - the reference recipe, not an
+  invented kernel.
 * No pose interpolation beyond `refinement/gap_fill.py`: missing runs of at
   most `refinement.gap_fill_max_frames` (default 12) hand-frames between two
   valid anchors are filled with the per-joint linear blend of the anchors and

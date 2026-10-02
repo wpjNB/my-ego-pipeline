@@ -136,6 +136,7 @@ def run_windows(
     skip_existing: bool = False,
     precision: str | None = None,
     crop_size: int | None = None,
+    box_pad: float | None = None,
 ) -> list[Path]:
     """Reconstruct every window of a clip and return the written files.
 
@@ -202,6 +203,8 @@ def run_windows(
         args += ["--precision", str(precision)]
     if crop_size is not None:
         args += ["--crop-size", str(crop_size)]
+    if box_pad is not None and float(box_pad) != 1.0:
+        args += ["--box-pad", repr(float(box_pad))]
     if request.focal is not None:
         # Without this HaWoR silently uses its 600 px default and every hand is
         # reconstructed at the wrong depth (2-3x too far on a 98-degree ego lens).
@@ -328,6 +331,12 @@ def hawor_tracks_from_detection(
                 }
             )
             per_frame_boxes[frame].append(entry)
+    # HaWoR's hawor_video.py concatenates each hand's track entries and crashes
+    # on an empty hand ("need at least one array to concatenate"), but a clip
+    # where only one hand is ever detected is normal egocentric data - drop the
+    # empty hand instead. Its loader iterates the dict and indexes it by the
+    # dict key, so the surviving keys must stay the original hand ids.
+    tracks = {hand: entries for hand, entries in tracks.items() if entries}
     # HaWoR's own detect_track returns an empty object array here; keep the same
     # shape for compatibility but fill it with what we know.
     model_boxes = np.array(per_frame_boxes, dtype=object)

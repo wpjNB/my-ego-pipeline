@@ -1,26 +1,31 @@
 # Ablation table
 
-Last modified: 2026-09-29 23:45 (+08:00)
+Last modified: 2026-10-01 22:35 (+08:00)
 
 ## Mock backend (CPU, 300 frames, deterministic - plumbing validation only)
 
 Produced by `bash scripts/demo_mock_pipeline.sh`, then
 `scripts/run_refine.py --output ... <flags>` + `scripts/evaluate_hot3d.py`
-against `backends/mock_backend.py truth`.
+against `backends/mock_backend.py truth`. Re-measured 2026-10-01 from one run
+of the current code (the Phase-2 binomial pass landed 09-30, so the older rows
+shifted by a few tenths of a millimetre).
 
 | Pipeline | Action MPJPE | Coverage | Wrist error |
 | --- | --- | --- | --- |
 | raw (no post-processing) | 24.6393 mm | 90.67 % | 22.92 mm |
 | + camera filter (3-frame binomial) + wrist depth | 26.7479 mm | 90.67 % | 16.06 mm |
-| + camera filter + bone scale (<= 3.5 %) | 23.9437 mm | 90.67 % | 22.92 mm |
-| + gap fill (P2, `max_gap` 12) on the three stages | 25.8118 mm | 92.00 % | 16.03 mm |
-| **Final** (camera filter + wrist depth + bone scale + gap fill) | **25.8118 mm** | **92.00 %** | 16.03 mm |
+| + camera filter + bone scale (<= 3.5 %) | 24.0959 mm | 90.67 % | 22.92 mm |
+| + gap fill (P2, `max_gap` 12) | 25.9840 mm | 92.00 % | 16.03 mm |
+| **Final** (+ UKF + RTS, P3) | **12.4935 mm** | **92.00 %** | **10.86 mm** |
 
 Pipeline wall time 17.92 s for 300 frames -> 16.74 FPS on CPU (an earlier
 quiet-machine run measured 5.65 s / 53.10 FPS; the stage composition is what
 matters here). Gap fill is the only stage that moves coverage: the planted
 10-frame right-hand hole sits on smooth motion, so the linear blend beats the
-mock's per-frame depth noise and both columns improve.
+mock's per-frame depth noise and both columns improve. P3 then halves the
+error because the mock's corruption (per-frame white depth noise + bone
+wobble) is exactly the component an RTS-smoothed UKF removes - on real HaWoR
+output the same stage moves aggregate MPJPE by < 0.5 mm (see below).
 
 ### How to read this
 
@@ -156,6 +161,34 @@ stitcher is not correspondence-limited; the residual error lives in the
 8-frame windows themselves (sm_60 has no flash-attention). Defaults stay
 8/128; the only real camera-side lever is bigger windows on better hardware.
 
+### Finger-depth bias: the dominant HaWoR failure and the box-padding fix
+
+Why the mesh "looks bad" while the wrist is fine (2026-09-30 diagnosis, all
+measured on ep000/ep003 camera-space hands vs the GT camera frame):
+
+* **Wrist placement is good** (29-57 mm) and **xy is near-perfect** (5-13 mm
+  mean over all 21 joints). The failure is **depth**: the per-joint z error
+  grows monotonically from the wrist (+1 cm) to the fingertips
+  (**+22-27 cm**), biased away from the camera, in HaWoR's *raw
+  motion-estimation output* - i.e. it is not the infiller, not the world
+  round trip, not blending/smoothing, and not tracked-box jitter (2-3 px).
+* **Cause (measured)**: the tracked boxes are ~27 % narrower than the hand
+  (85 px vs 117 px expected), so the 256 px crops cut the fingers; HaWoR
+  then guesses the depth of what it cannot see. Widening the boxes before
+  HaWoR (`detection.box_padding: 1.5`, new runner flag `--box-pad`) removed
+  ~20 % of the finger-z bias and brought Action-MPJPE on ep000 from
+  **187.9 -> 161.6 mm** (wrist trades up slightly, 38 -> 57 mm). ep003:
+  188.5 -> 185.6 mm.
+* **Cache correctness fix**: HaWoR short-circuits to its cached
+  reconstruction whenever `est_focal.txt` matches - it never saw the padded
+  boxes on the first attempt. The invalidation marker now records
+  `{focal, box_pad}` and drops the cache when either changes.
+* **Hard floor**: even padded, the residual z bias (~10 cm at fingertips) is
+  bound by input quality - the sample footage is 512x512, 2.75x below the
+  Aria sensor's native 1408x1408, with egocentric motion blur. The reference
+  system's 32.35 mm camera-space error was measured on its own episodes at
+  full quality on an H100.
+
 ### Post-processing stages (all at the resolved focal)
 
 | Pipeline | MPJPE | Wrist error | Coverage |
@@ -198,8 +231,125 @@ column matches the no-fill baseline, with the small residual coming from
 wrist-depth now optimising longer merged segments. This is the same trade the
 reference system makes when it reports 81 % coverage. The left hand's long
 blind stretches on ep000 stay missing: holes longer than `max_gap` are never
-extrapolated. Reports:
-`outputs/hot3d_ep0{00,03}_trajectory{,_gapfill}_report.json`.
+extrapolated. The baselines in this table predate the 2026-10-01 box-padding
+re-run (their old `outputs/*.json` reports were cleared with the rest of
+`outputs/`); the same-source table under P3 below supersedes them and its
+reports live next to the artefacts in `data/hot3d/<clip>/trajectory/`.
+
+### UKF + RTS temporal smoothing (P3, added 2026-10-01)
+
+`refinement/ukf_smooth.py` ports the reference pipeline's `smooth_ukf_cam`
+(their P3): a per-channel constant-velocity UKF over the valid frames of each
+hand, observation scale from the MAD of second differences, speed-adaptive
+observation noise, and an unscented RTS backward pass. The filter code keeps
+the reference's defaults (`q = r = 0.6`, `beta = 2.0`); the shipped configs
+carry the reference *UI*'s default instead - `q 0.7, r 0.5, beta 0.3`
+("lighter smoothing"; recommended q 0.4-1.0, r 0.3-1.0, beta 0.2-3.0, safe
+q/r 0.1-2.0, beta 0-5, matching `PARAM_LIMITS`). `refinement.ukf_q/r/beta/rts`
+override, `--no-ukf-smooth` disables, and the resolved values are recorded in
+`trajectory/metadata.json`. It runs in camera space after wrist depth and
+before the world transform; missing frames are neither read nor written, and a
+hand with fewer than 4 valid frames is left untouched.
+
+Same-source comparison on the 2026-10-01 artefacts (ep000/ep003 re-run with
+box padding; all three variants produced from the same `trajectory_raw.npz`):
+
+| Episode / variant | MPJPE | pred-only MPJPE | Coverage | Wrist | Wrist accel (L/R) |
+| --- | --- | --- | --- | --- | --- |
+| ep000 baseline (no P2/P3) | 161.59 mm | = | 63.56 % | 67.37 mm | 6.7 / 8.8 mm |
+| ep000 + P2 | 162.77 mm | 161.56 mm | 65.33 % | 67.19 mm | 6.5 / 8.8 mm |
+| ep000 + P2 + P3 (shipped 0.7/0.5/0.3) | 162.61 mm | 161.40 mm | 65.33 % | 66.96 mm | **3.2 / 4.1 mm** |
+| ep003 baseline | 185.66 mm | = | 69.33 % | 84.10 mm | 13.0 / 13.7 mm |
+| ep003 + P2 | 185.65 mm | 185.64 mm | 71.78 % | 84.59 mm | 12.7 / 13.7 mm |
+| ep003 + P2 + P3 (shipped 0.7/0.5/0.3) | 185.43 mm | 185.41 mm | 71.78 % | 84.25 mm | **5.2 / 5.8 mm** |
+
+"Wrist accel" is the median over valid frames of the mean per-joint
+acceleration magnitude (second difference; frames where three consecutive
+hand-frames are valid). Reading: P3 is a jitter killer, not an MPJPE mover -
+on real HaWoR output the aggregate moves < 0.5 mm while the frame-to-frame
+acceleration drops 52 % (ep000) and 60 % (ep003) at the shipped parameters.
+The Phase-2 binomial pass (2026-09-30 changelog) only damps the white-noise
+component; P3 removes the rest of the high-frequency wobble, which is what the
+eye sees in the mesh videos. On the mock, where the corruption is per-frame
+white noise, the same stage halves the error (25.98 -> 12.49 mm; the mock
+config keeps the library defaults). Reports:
+`data/hot3d/<clip>/trajectory/eval_{v_base,v_p2,p2p3}.json`.
+
+**Parameter sweep** (2026-10-01, same two episodes; each row is a full refine
+run with only `refinement.ukf_*` changed). Every set keeps MPJPE inside
+0.6 mm - the knob buys smoothness, not accuracy - so the choice is
+"smoother vs more follow-through"; the guidance from the reference UI is
+q up = follows the hand more, r/beta up = smoother:
+
+| UKF set (q/r/beta) | ep000 MPJPE · accel L/R | ep003 MPJPE · accel L/R |
+| --- | --- | --- |
+| baseline (no P3) | 161.59 mm · 6.7 / 8.8 mm | 185.66 mm · 13.0 / 13.7 mm |
+| follow 1.0 / 0.3 / 0.2 | 162.69 mm · 4.8 / 6.5 mm | 185.54 mm · 9.1 / 10.0 mm |
+| **shipped 0.7 / 0.5 / 0.3** (reference UI default) | 162.61 mm · 3.2 / 4.1 mm | 185.43 mm · 5.2 / 5.8 mm |
+| library 0.6 / 0.6 / 2.0 | 162.57 mm · 2.8 / 3.6 mm | 185.29 mm · 4.1 / 4.5 mm |
+| heavy 0.5 / 1.0 / 3.0 | 162.49 mm · 2.7 / 3.0 mm | 185.11 mm · 3.4 / 3.6 mm |
+
+On these two episodes the heavier sets measure weakly better on all three
+columns, so the sub-millimetre spread is what a default is choosing between;
+the shipped set follows the reference product's default, and the heavier
+library set is one config edit away. Sweep artefacts:
+`data/hot3d/_p3_sweep/`.
+
+### Cross-participant subset of HOT3D-Clips (2026-10-01, generalisation check)
+
+The repo's mirror of the **HOT3D-Clips** challenge set (135 clips across three
+participants, 1408×1408, 81 frames each, imported by
+`scripts/import_hot3d_clips.py`) is a different capture campaign from the three
+512×512 episodes every stage above was tuned on. A 15-clip subset (5 per
+participant, indices spread) ran the full real chain on the 3 P100s
+(`configs/clips.cross_subset.yaml`; ~25 min wall). What can be scored here is
+constrained by the mirror's reference quality (see the importer docstring):
+**the camera GT is valid** (verified 7 mm median vs VGGT on a static clip),
+**the hand/wrist GT is not scoreable** - it projects into the ceiling, and the
+spot-check render makes it obvious (predicted wrists land on the real wrists,
+the GT wrist markers float on the whiteboard).
+
+| clip | camera err (med) | det cov L/R | hand cov (interp) |
+| --- | --- | --- | --- |
+| P0015_c000000 | **0.42° / 7 mm** | 100/100 % | 100 % |
+| P0015_c000009 | **1.94° / 24 mm** | 100/100 % | 100 % |
+| P0015_c000018 | 11.10° / 108 mm | 100/88 % | 99 % |
+| P0002_c000016 | 15.52° / 33 mm | 100/100 % | 100 % |
+| P0001_c000000 | 19.56° / 131 mm | 80/100 % | 90 % |
+| P0002_c000000 | 22.09° / 154 mm | 100/100 % | 100 % |
+| P0002_c000032 | 23.52° / 56 mm | 100/80 % | 90 % |
+| P0002_c000008 | 34.76° / 318 mm | 100/100 % | 100 % |
+| P0002_c000024 | 37.52° / 281 mm | 0/100 % | 50 % |
+| P0001_c000036 | 37.67° / 149 mm | 53/63 % | 59 % |
+| P0001_c000018 | 45.77° / 148 mm | 53/75 % | 65 % |
+| P0015_c000027 | 48.49° / 155 mm | 51/65 % | 58 % |
+| P0015_c000036 | 52.87° / 239 mm | 100/98 % | 99 % |
+| P0001_c000009 | 51.09° / 112 mm | 0/73 % | 46 % |
+| P0001_c000027 | 69.42° / 201 mm | 59/78 % | 93 % |
+| **median (15)** | **34.8° / 148 mm** | | |
+
+Reading, in three parts:
+
+1. **The chain generalises.** Hand detection on the full-res 1408² clips is far
+   stronger than on the 512² episodes (10/15 clips ≥ 80 % both hands vs
+   ep000's 35/92 %), the focal resolution, stitch, fusion and P2/P3 stages ran
+   unmodified, and the visual spot-checks show wrists on wrists.
+2. **The camera numbers are a weak reference, not a leaderboard.** The mirror's
+   `camera.json` itself drifts from VGGT by 7-27° during fast head rotation
+   (documented in the importer), so mid-range errors are ambiguous; the two
+   near-static clips at 0.42°/1.94° are the honest end-to-end validation.
+   One-sided detection clips (P0001_c000009, P0002_c000024: one hand at 0 %)
+   previously crashed HaWoR - now handled (below).
+3. **Two batch defects surfaced and were fixed** (2026-10-01):
+   `build_command` added `--blend-only` to *every* whole-clip hand unit, so any
+   batch run without `--shards` failed with "HaWoR window(s) are missing"
+   (the join is now an explicit unit `mode`, regression-pinned in
+   `tests/test_batch.py`); and HaWoR crashed on clips where one hand is never
+   detected (`hawor_tracks_from_detection` now drops the empty hand, and the
+   runner short-circuits an all-invalid result). `render_gt_vs_pred.py` falls
+   back to Phase 3 window intrinsics when the reference `camera_K` is NaN.
+   Reports: `data/hot3d/cross_subset_summary.json`,
+   `data/hot3d/batch_cross_subset.json`.
 
 ### How to read the absolute numbers
 

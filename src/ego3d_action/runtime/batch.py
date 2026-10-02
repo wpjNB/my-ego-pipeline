@@ -124,7 +124,14 @@ class ClipSpec:
 
 @dataclass
 class UnitSpec:
-    """One schedulable piece of work: a sharded stage of one clip."""
+    """One schedulable piece of work: a sharded stage of one clip.
+
+    ``mode`` distinguishes what a whole-clip unit of a shardable stage means:
+    ``"full"`` runs the model over every window, while ``"blend-only"`` (hand)
+    and ``"reuse"`` (camera) name the join step that assembles the shards' own
+    outputs. The two are only distinguishable by the plan that emitted them, so
+    the plan records it here instead of the command builder guessing.
+    """
 
     clip: str
     stage: str
@@ -132,6 +139,12 @@ class UnitSpec:
     num_windows: int = 1
     video: str | None = None
     num_frames: int | None = None
+    mode: str = "full"
+
+    def __post_init__(self) -> None:
+        allowed = {"full", "blend-only", "reuse"}
+        if self.mode not in allowed:
+            raise ValueError(f"unit mode must be one of {sorted(allowed)}, got {self.mode!r}")
 
     @property
     def name(self) -> str:
@@ -143,6 +156,7 @@ class UnitSpec:
             "stage": self.stage,
             "selection": self.selection.to_dict(),
             "num_windows": self.num_windows,
+            "mode": self.mode,
         }
 
 
@@ -349,6 +363,7 @@ def build_plan(
                             num_windows=total,
                             video=clip.video,
                             num_frames=num_frames,
+                            mode="blend-only" if stage == "hand" else "reuse",
                         )
                     )
             else:
@@ -401,10 +416,11 @@ def unit_command(
         command.append(unit.video)
     if unit.stage in SHARDABLE_STAGES and not unit.selection.is_whole:
         command += ["--shard", f"{unit.selection.shard.index}/{unit.selection.shard.count}"]
-    if unit.stage in ASSEMBLY_STAGES and unit.selection.is_whole:
-        # Whole-clip join step emitted only for a sharded run: hand blends the
-        # windows the shards wrote; camera reuses them, so a sharded camera run
-        # never re-runs the model.
+    if unit.stage in ASSEMBLY_STAGES and unit.selection.is_whole and unit.mode != "full":
+        # The sharded plan's whole-clip join step: hand blends the windows the
+        # shards wrote; camera reuses them, so a sharded camera run never
+        # re-runs the model. A full whole-clip run (mode == "full") must run
+        # the model and gets no join flags.
         if unit.stage == "hand":
             command += ["--blend-only"]
         command += ["--skip-existing"]
@@ -420,16 +436,13 @@ def output_marker_exists(marker_dir: Path, unit_key: str) -> bool:
 def unit_argument_signature(unit: UnitSpec) -> dict[str, Any]:
     """The parameters that determine a stage's output, for hashing.
 
-    Includes the *mode* of a sharded stage's whole-clip unit, because the join
-    step (``--blend-only``) writes a different set of artefacts than a full
-    whole-clip run and must not be confused with it when skipping.
+    Includes the *mode* of a shardable stage's whole-clip unit, because the
+    join step (``--blend-only``) writes a different set of artefacts than a
+    full whole-clip run and must not be confused with it when skipping.
     """
-    mode = "full"
-    if unit.stage in ASSEMBLY_STAGES and unit.selection.is_whole:
-        mode = "blend-only" if unit.stage == "hand" else "reuse"
     return {
         "stage": unit.stage,
-        "mode": mode,
+        "mode": unit.mode,
         "num_windows": unit.num_windows,
         "num_frames": unit.num_frames,
     }

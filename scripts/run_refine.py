@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Phase 6: targeted post-processing (gap fill, camera filter, bone scale, wrist depth)."""
+"""Phase 6: targeted post-processing (gap fill, camera filter, bone scale, wrist depth, UKF+RTS)."""
 
 from __future__ import annotations
 
@@ -19,6 +19,12 @@ from ego3d_action.io.serialization import load_npz, save_json, save_npz  # noqa:
 from ego3d_action.refinement.bone_scale import correct_bone_scale  # noqa: E402
 from ego3d_action.refinement.camera_filter import filter_camera_translation  # noqa: E402
 from ego3d_action.refinement.gap_fill import DEFAULT_MAX_GAP, interpolate_hand_gaps  # noqa: E402
+from ego3d_action.refinement.ukf_smooth import (  # noqa: E402
+    DEFAULT_BETA,
+    DEFAULT_Q,
+    DEFAULT_R,
+    smooth_hand_joints,
+)
 from ego3d_action.refinement.wrist_depth import optimize_wrist_depth  # noqa: E402
 
 
@@ -33,6 +39,11 @@ def main(argv: list[str] | None = None) -> int:
         "--no-gap-fill",
         action="store_true",
         help="keep missing frames missing instead of interpolating short gaps",
+    )
+    parser.add_argument(
+        "--no-ukf-smooth",
+        action="store_true",
+        help="skip the UKF + RTS temporal smoothing of the hand joints",
     )
     args = parser.parse_args(argv)
 
@@ -114,6 +125,34 @@ def main(argv: list[str] | None = None) -> int:
                 "wrist_depth_segments": float(wrist.segments),
             }
 
+        # P3: constant-velocity UKF + unscented RTS over the valid frames of
+        # each hand, the final temporal pass of the reference chain. Parameters
+        # follow the reference UI's guidance (q up = follows the hand more,
+        # r/beta up = smoother); every value is recorded in the metadata so an
+        # artefact always says how it was smoothed.
+        ukf_report: dict[str, float] = {}
+        if not args.no_ukf_smooth:
+            ukf_q = float(context.config.get("refinement.ukf_q", DEFAULT_Q))
+            ukf_r = float(context.config.get("refinement.ukf_r", DEFAULT_R))
+            ukf_beta = float(context.config.get("refinement.ukf_beta", DEFAULT_BETA))
+            ukf_rts = bool(context.config.get("refinement.ukf_rts", True))
+            smooth = smooth_hand_joints(
+                corrected_camera,
+                valid,
+                q=ukf_q,
+                r=ukf_r,
+                beta=ukf_beta,
+                rts=ukf_rts,
+            )
+            corrected_camera = smooth.joints_camera
+            ukf_report = {
+                "ukf_q": ukf_q,
+                "ukf_r": ukf_r,
+                "ukf_beta": ukf_beta,
+                "ukf_rts": float(ukf_rts),
+                "ukf_frames_smoothed": float(smooth.frames_smoothed.sum()),
+            }
+
         world = camera_joints_to_world(
             corrected_camera, rotation, refined_translation, hand_valid=valid
         )
@@ -159,9 +198,11 @@ def main(argv: list[str] | None = None) -> int:
                 "bone_scale_applied": not args.no_bone_scale,
                 "wrist_depth_applied": not args.no_wrist_depth,
                 "gap_fill_applied": not args.no_gap_fill,
+                "ukf_smooth_applied": not args.no_ukf_smooth,
                 **bone_report,
                 **wrist_report,
                 **gap_report,
+                **ukf_report,
             },
         )
         if output_path == layout.trajectory_path:

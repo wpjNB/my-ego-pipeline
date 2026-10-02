@@ -1,11 +1,13 @@
 # Implementation status
 
-Last modified: 2026-09-29 (+08:00)
+Last modified: 2026-10-01 (+08:00)
 
-Test suite: **392 passed** in ~85 s on a CPU-only interpreter
+Test suite: **420 passed**, 1 skipped in ~92 s on a CPU-only interpreter
 (`conda run -n ego3d_base python -m pytest -q`). 119 of those are newer than
 the M0 suite: the sharding/provenance/executor/batch modules, the sharded E2E
-comparison, and the HaWoR focal-resolution + cache-invalidation tests.
+comparison, and the HaWoR focal-resolution + cache-invalidation tests. The
+newest additions are the post-processing stages P2 (`tests/test_gap_fill.py`)
+and P3 (`tests/test_ukf_smooth.py`).
 
 The `-vsync` wart is gone: `io/video.py` probes ffmpeg and picks
 `-fps_mode passthrough` (5.1+) over `-vsync 0`, so any ffmpeg works.
@@ -41,6 +43,8 @@ serves every clip's videos and stills in one page.
 | Depth correspondences + stitching | `camera/depth.py`, `camera/stitch.py` | `tests/test_stitch.py` |
 | World fusion + trajectory contract | `fusion/trajectory.py`, `io/serialization.py` | `tests/test_fusion.py`, `tests/test_serialization.py` |
 | Camera filter / bone scale / wrist depth | `refinement/*` | `tests/test_camera_filter.py`, `tests/test_bone_scale.py`, `tests/test_wrist_depth.py` |
+| Short-gap interpolation (P2) | `refinement/gap_fill.py` | `tests/test_gap_fill.py` |
+| UKF + RTS smoothing (P3) | `refinement/ukf_smooth.py` | `tests/test_ukf_smooth.py` |
 | Action-MPJPE / coverage / report | `evaluation/*` | `tests/test_action_mpjpe.py` |
 | Phase 0 video IO | `io/video.py`, `io/frames.py` | `tests/test_frames_io.py` |
 | Synthetic scene / mock data | `testing/synthetic.py` | `tests/test_mock_pipeline.py` |
@@ -85,17 +89,21 @@ whose reference profile stays in `configs/hot3d.yaml`).
 
 ## Next steps, in order
 
-1. **Detection is the weakest stage.** WiLoR covers the left hand in only
-   22.7 % of hot3d_ep000's frames, so half the hand-frames (and most of the
-   left hand) never reach evaluation. Options: lower `detection.min_confidence`
-   for tracking, re-detect per window, or pick/weight episodes where both
-   hands are seen. This caps every aggregate number.
-2. **Multi-episode evaluation.** Re-import `hot3d_ep003` (0-byte frame stubs),
-   run the same chain, and average the table over episodes instead of quoting
-   one. `real24` still needs its Phase 3-6 as well.
-3. **Full ablation table.** The focal and post-processing rows are filled
-   (`doc_auto/ablation.md`); the upstream rows (HaWoR without VGGT, +40
-   overlap, HaWoR-original pipeline) still need dedicated runs.
+1. **Detection is still the weakest stage**, though 2026-09-30/10-01 work
+   (continuity-first exclusive tracker, `box_padding: 1.5` before HaWoR)
+   moved ep000 to 34.9 % / 92.2 % and 161.6 mm. Left-hand recall on this
+   lens remains the cap on every aggregate number; the honest option left is
+   a detector better calibrated for this resolution, or selecting episodes.
+2. **P1 (outlier screening) is the one reference post-processing stage still
+   missing.** The reference's `block_outlier.block_spike` rejects temporal and
+   motion outliers before interpolation; here `hand_valid` carries that
+   information instead. A MAD/block screen is only worth adding together with
+   a coverage-policy decision (drop vs down-weight), since dropping frames
+   lowers the coverage number.
+3. **Full ablation table.** The focal, detection, stitch, finger-depth and
+   P2/P3 rows are filled (`doc_auto/ablation.md`); the upstream rows (HaWoR
+   without VGGT, +40 overlap, HaWoR-original pipeline) still need dedicated
+   runs - `scripts/run_hawor_standalone.py` provides the native-path control.
 4. **VGGT window size on better hardware.** 200/40 is what the reference
    configuration wants; the P100 tops out at 8. On an A100/H100, re-run Phase
    3-7 at 200/40 and update the table.

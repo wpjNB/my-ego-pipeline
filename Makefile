@@ -9,7 +9,7 @@ HOSTS ?= configs/hosts.local.yaml
 SHARDS ?= 1
 PARALLEL ?= 1
 
-.PHONY: help env install test test-fast dry-run clean smoke batch dry-batch
+.PHONY: help env install test test-fast dry-run clean smoke batch dry-batch vggt-examples vggt-examples-256
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -52,3 +52,11 @@ dry-batch: ## print the batch unit plan without running anything
 	$(CONDA) run -n $(ENV) python scripts/run_batch.py \
 		--manifest $(MANIFEST) --config $(CONFIG) \
 		--hosts $(HOSTS) --shards $(SHARDS) --dry-run
+
+vggt-examples: ## run VGGT-Omega on third_party examples (416px / 8 frames, P100-safe)
+	$(CONDA) run -n $(ENV) python scripts/run_vggt_examples.py \
+		--num-frames 8 --resolution 416 --out-dir outputs/vggt_examples
+
+vggt-examples-256: ## same, but a longer trajectory (256px / 24 frames)
+	$(CONDA) run -n $(ENV) python scripts/run_vggt_examples.py \
+		--num-frames 24 --resolution 256 --precision fp16 --out-dir outputs/vggt_examples_256

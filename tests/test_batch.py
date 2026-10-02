@@ -29,6 +29,7 @@ from ego3d_action.runtime.batch import (
     load_manifest,
     num_windows_for,
     stage_sequence,
+    unit_argument_signature,
     unit_command,
 )
 from ego3d_action.runtime.executor import (
@@ -305,9 +306,22 @@ def test_unit_command_shape() -> None:
     assert "--shard" in command and "1/2" in command
     assert command[0] == "python"
 
-    assembly = UnitSpec(clip="c1", stage="hand", selection=WindowSelection(), num_windows=29)
+    assembly = UnitSpec(
+        clip="c1", stage="hand", selection=WindowSelection(), num_windows=29, mode="blend-only"
+    )
     blend = unit_command(assembly, config_path="cfg.yaml", data_root="data", extra=[])
     assert "--blend-only" in blend and "--skip-existing" in blend
+
+    # A whole-clip hand unit that is NOT the sharded plan's join must run the
+    # model (the batch.py build_command regression: --blend-only on a full run
+    # made every unsharded batch fail with "HaWoR window(s) are missing").
+    full = UnitSpec(clip="c1", stage="hand", selection=WindowSelection(), num_windows=29)
+    command = unit_command(full, config_path="cfg.yaml", data_root="data", extra=[])
+    assert "--blend-only" not in command
+    assert unit_argument_signature(full)["mode"] == "full"
+    assert unit_argument_signature(assembly)["mode"] == "blend-only"
+    with pytest.raises(ValueError, match="mode"):
+        UnitSpec(clip="c1", stage="hand", selection=WindowSelection(), mode="wat")
 
 
 def test_unit_command_preprocess_requires_a_video() -> None:
