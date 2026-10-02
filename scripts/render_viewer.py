@@ -109,7 +109,15 @@ def main(argv: list[str] | None = None) -> int:
         if not frames:
             return fail("no frames found")
         total = min(len(frames), vertices.shape[0], tracks[0]["joints"].shape[0])
-        size = (512, 512)
+        # The ego panel must project with the *frame's* resolution: a hardcoded
+        # (512, 512) drew 1408 px clips at 512-scale intrinsics (mesh shrunk to
+        # 1/2.75 and anchored near the image origin - the "mesh floating on the
+        # wall" artefact).
+        sample = cv2.imread(str(frames[0]), cv2.IMREAD_COLOR)
+        if sample is None:
+            return fail(f"cannot decode {frames[0]}")
+        height, width = sample.shape[:2]
+        size = (width, height)
         intrinsics = _ego_intrinsics(viz, frames[0].parent, size)
 
         import matplotlib
