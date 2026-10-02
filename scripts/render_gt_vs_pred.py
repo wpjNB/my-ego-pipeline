@@ -146,6 +146,7 @@ def main(argv: list[str] | None = None) -> int:
             draw_skeleton=args.skeleton,
             fps=float(args.fps or frames.fps) / float(args.stride),
             still_indices=still_steps,
+            note="GT aligned to prediction (constant wrist offset)" if args.align_gt else None,
         )
         print(f"wrote {out_path}")
 

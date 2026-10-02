@@ -26,6 +26,7 @@ Array = np.ndarray
 LEFT_COLOUR = (60, 76, 231)  # BGR: left hand
 RIGHT_COLOUR = (76, 177, 34)  # BGR: right hand
 SKELETON_COLOUR = (240, 240, 240)  # BGR: near-white, reads on top of the shaded mesh
+PREDICTION_COLOUR = (0, 215, 255)  # BGR: orange, the comparison overlay's prediction
 EDGES = bone_pairs()
 
 
@@ -466,17 +467,20 @@ def write_wrist_comparison_video(
     fps: float = 30.0,
     still_indices: Sequence[int] = (),
     still_dir: str | Path | None = None,
+    note: str | None = None,
 ) -> Path:
-    """Overlay the reference wrist (and optionally a prediction) on the RGB.
+    """Overlay the reference (and optionally a prediction) on the RGB.
 
     Both trajectories are projected with the *reference* camera, so this is a
     direct visual check that the ground truth - and the frame conventions the
     whole pipeline uses - line up with the pixels.
 
-    With ``draw_skeleton`` the full 21-joint reference (and prediction) is drawn
-    as well, for frames whose joints are finite - i.e. whenever the reference was
-    built with MANO. Joints and wrists always go through
-    :func:`world_to_camera` first.
+    With ``draw_skeleton`` both hands are drawn as 21-joint skeletons: the
+    ground truth in its per-hand colours, the prediction in
+    :data:`PREDICTION_COLOUR`. The wrist markers carry a ``Δ <mm>`` label on
+    the connecting line; frames where a hand is GT-valid but the prediction is
+    missing say so instead of silently showing one side. ``note`` is echoed in
+    the header (e.g. the alignment mode).
     """
     cv2 = require_cv2()
     frames = list(frame_paths)
@@ -508,18 +512,29 @@ def write_wrist_comparison_video(
                 raise StageIOError(f"cannot decode {path}")
             canvas = frame.copy()
             if draw_skeleton:
-                # The reference only: the prediction keeps its own orange marker,
-                # and the two must stay visually distinguishable.
-                joints_camera = world_to_camera(
+                # Ground truth in its per-hand colours, prediction in orange -
+                # two full skeletons, not a lone dot next to a skeleton.
+                gt_cam = world_to_camera(
                     truth[index], rotation_c2w[index], translation_c2w[index]
                 )
-                drawable = np.asarray(valid[index], dtype=bool) & np.isfinite(
-                    joints_camera
+                gt_draw = np.asarray(valid[index], dtype=bool) & np.isfinite(
+                    gt_cam
                 ).all(axis=(1, 2))
-                if drawable.any():
+                if gt_draw.any():
                     canvas = draw_hand_projection(
-                        canvas, joints_camera, intrinsics[index], drawable, radius=2
+                        canvas, gt_cam, intrinsics[index], gt_draw, radius=2
                     )
+                pred_cam = None
+                if prediction is not None:
+                    pred_cam = world_to_camera(
+                        prediction[index], rotation_c2w[index], translation_c2w[index]
+                    )
+                    pred_draw = np.isfinite(pred_cam).all(axis=(1, 2))
+                    if pred_draw.any():
+                        canvas = draw_hand_projection(
+                            canvas, pred_cam, intrinsics[index], pred_draw,
+                            radius=2, colour=PREDICTION_COLOUR,
+                        )
             for hand, colour, label in ((0, LEFT_COLOUR, "L"), (1, RIGHT_COLOUR, "R")):
                 if not bool(valid[index, hand]):
                     continue
@@ -550,20 +565,52 @@ def write_wrist_comparison_video(
                         cv2.LINE_AA,
                     )
                 if pred_pixel is not None:
-                    cv2.circle(canvas, pred_pixel, 6, (0, 215, 255), 2, cv2.LINE_AA)
+                    cv2.circle(canvas, pred_pixel, 6, PREDICTION_COLOUR, 2, cv2.LINE_AA)
+                    cv2.putText(
+                        canvas,
+                        "pred",
+                        (pred_pixel[0] + 8, pred_pixel[1] + 12),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.4,
+                        PREDICTION_COLOUR,
+                        1,
+                        cv2.LINE_AA,
+                    )
                 if gt_pixel is not None and pred_pixel is not None:
                     error_mm = 1000.0 * float(
                         np.linalg.norm(truth[index, hand, 0, :] - prediction[index, hand, 0, :])
                     )
                     cv2.line(canvas, gt_pixel, pred_pixel, (255, 255, 255), 1, cv2.LINE_AA)
                     midpoint = ((gt_pixel[0] + pred_pixel[0]) // 2, (gt_pixel[1] + pred_pixel[1]) // 2)
+                    # black stroke under the text so it reads on any background
                     cv2.putText(
                         canvas,
-                        f"{error_mm:.0f} mm",
-                        midpoint,
+                        f"\u0394 {error_mm:.0f} mm",
+                        (midpoint[0] + 4, midpoint[1] - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.4,
+                        (0, 0, 0),
+                        2,
+                        cv2.LINE_AA,
+                    )
+                    cv2.putText(
+                        canvas,
+                        f"\u0394 {error_mm:.0f} mm",
+                        (midpoint[0] + 4, midpoint[1] - 6),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.4,
                         (255, 255, 255),
+                        1,
+                        cv2.LINE_AA,
+                    )
+                elif gt_pixel is not None and prediction is not None:
+                    cv2.putText(
+                        canvas,
+                        "no prediction",
+                        (gt_pixel[0] + 8, gt_pixel[1] + 12),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.4,
+                        (160, 160, 160),
                         1,
                         cv2.LINE_AA,
                     )
@@ -571,7 +618,8 @@ def write_wrist_comparison_video(
                 canvas,
                 f"frame {index}"
                 + ("   orange = prediction" if prediction is not None else "")
-                + "   coloured = ground truth",
+                + "   coloured = ground truth"
+                + (f"   [{note}]" if note else ""),
                 (8, 18),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.45,
