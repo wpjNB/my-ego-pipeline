@@ -453,6 +453,19 @@ def world_to_camera(
     return rotated
 
 
+def _project_pixel(point_camera: Array, intrinsics: Array) -> tuple[int, int] | None:
+    """Pixel of an already camera-space point, or None when not projectable."""
+    point = np.asarray(point_camera, dtype=np.float64)
+    k = np.asarray(intrinsics, dtype=np.float64)
+    if not np.isfinite(point).all() or point[2] <= 1e-6:
+        return None
+    uv = k @ point
+    uv = uv[:2] / uv[2]
+    if not (np.isfinite(uv).all()):
+        return None
+    return int(round(float(uv[0]))), int(round(float(uv[1])))
+
+
 def write_wrist_comparison_video(
     frame_paths: Sequence[Path],
     ground_truth_world: Array,
@@ -468,6 +481,7 @@ def write_wrist_comparison_video(
     still_indices: Sequence[int] = (),
     still_dir: str | Path | None = None,
     note: str | None = None,
+    prediction_camera: Array | None = None,
 ) -> Path:
     """Overlay the reference (and optionally a prediction) on the RGB.
 
@@ -481,6 +495,13 @@ def write_wrist_comparison_video(
     the connecting line; frames where a hand is GT-valid but the prediction is
     missing say so instead of silently showing one side. ``note`` is echoed in
     the header (e.g. the alignment mode).
+
+    By default the prediction is taken from the world trajectory and projected
+    through the reference camera, so the overlay shows the *system* error
+    (hands + camera trajectory). Pass ``prediction_camera`` (the prediction's
+    own ``hand_xyz_camera``) to render it in its own camera frame instead -
+    the residual disagreement with the GT skeleton is then hand-estimation
+    error only, with the camera trajectory factored out.
     """
     cv2 = require_cv2()
     frames = list(frame_paths)
@@ -526,9 +547,12 @@ def write_wrist_comparison_video(
                     )
                 pred_cam = None
                 if prediction is not None:
-                    pred_cam = world_to_camera(
-                        prediction[index], rotation_c2w[index], translation_c2w[index]
-                    )
+                    if prediction_camera is not None:
+                        pred_cam = prediction_camera[index]
+                    else:
+                        pred_cam = world_to_camera(
+                            prediction[index], rotation_c2w[index], translation_c2w[index]
+                        )
                     pred_draw = np.isfinite(pred_cam).all(axis=(1, 2))
                     if pred_draw.any():
                         canvas = draw_hand_projection(
@@ -541,16 +565,23 @@ def write_wrist_comparison_video(
                 gt_pixel = _project_wrist(
                     truth[index, hand, 0, :], rotation_c2w[index], translation_c2w[index], intrinsics[index]
                 )
-                pred_pixel = (
-                    _project_wrist(
-                        prediction[index, hand, 0, :],
-                        rotation_c2w[index],
-                        translation_c2w[index],
-                        intrinsics[index],
+                if prediction_camera is not None:
+                    pred_pixel = (
+                        _project_pixel(prediction_camera[index, hand, 0, :], intrinsics[index])
+                        if prediction is not None
+                        else None
                     )
-                    if prediction is not None
-                    else None
-                )
+                else:
+                    pred_pixel = (
+                        _project_wrist(
+                            prediction[index, hand, 0, :],
+                            rotation_c2w[index],
+                            translation_c2w[index],
+                            intrinsics[index],
+                        )
+                        if prediction is not None
+                        else None
+                    )
                 if gt_pixel is not None:
                     cv2.circle(canvas, gt_pixel, 6, colour, 2, cv2.LINE_AA)
                     cv2.drawMarker(canvas, gt_pixel, colour, cv2.MARKER_CROSS, 14, 2)
@@ -576,7 +607,9 @@ def write_wrist_comparison_video(
                         1,
                         cv2.LINE_AA,
                     )
-                if gt_pixel is not None and pred_pixel is not None:
+                if gt_pixel is not None and pred_pixel is not None and prediction_camera is not None:
+                    pass  # camera-frame mode: the two skeletons are the message
+                elif gt_pixel is not None and pred_pixel is not None and prediction_camera is None:
                     error_mm = 1000.0 * float(
                         np.linalg.norm(truth[index, hand, 0, :] - prediction[index, hand, 0, :])
                     )
@@ -603,7 +636,7 @@ def write_wrist_comparison_video(
                         1,
                         cv2.LINE_AA,
                     )
-                elif gt_pixel is not None and prediction is not None:
+                elif gt_pixel is not None and pred_pixel is None and prediction is not None:
                     cv2.putText(
                         canvas,
                         "no prediction",

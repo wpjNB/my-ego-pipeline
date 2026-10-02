@@ -62,6 +62,15 @@ def main(argv: list[str] | None = None) -> int:
         help="also draw the reference's 21 joints (needs a MANO-built reference)",
     )
     parser.add_argument(
+        "--hand-frame",
+        action="store_true",
+        help="render the prediction in its OWN camera frame instead of the "
+        "reference camera: the overlay then shows hand-estimation error only, "
+        "with the camera-trajectory error factored out (the world projection "
+        "conflates the two - a camera-drift frame displaces both hands "
+        "together)",
+    )
+    parser.add_argument(
         "--align-gt",
         action="store_true",
         help="align the GT hands with a per-hand constant camera-frame translation "
@@ -85,6 +94,16 @@ def main(argv: list[str] | None = None) -> int:
                 f"prediction has {prediction.num_frames} frames but the reference has "
                 f"{reference.num_frames}"
             )
+        prediction_camera = None
+        if args.hand_frame and prediction is not None:
+            from ego3d_action.io.serialization import load_npz  # noqa: PLC0415
+
+            prediction_camera = np.asarray(
+                load_npz(args.prediction, required=("hand_xyz_camera",))["hand_xyz_camera"],
+                dtype=np.float64,
+            )
+            if prediction_camera.shape[0] != reference.num_frames:
+                raise StageIOError("prediction hand_xyz_camera covers a different frame count")
         if args.align_gt:
             if prediction is None:
                 return fail("--align-gt needs --prediction to estimate the offset from")
@@ -146,7 +165,12 @@ def main(argv: list[str] | None = None) -> int:
             draw_skeleton=args.skeleton,
             fps=float(args.fps or frames.fps) / float(args.stride),
             still_indices=still_steps,
-            note="GT aligned to prediction (constant wrist offset)" if args.align_gt else None,
+            note=(
+                "GT aligned to prediction (constant wrist offset)" if args.align_gt else None
+            )
+            if prediction_camera is None
+            else "prediction in its own camera frame - hand error only",
+            prediction_camera=prediction_camera if prediction_camera is not None else None,
         )
         print(f"wrote {out_path}")
 
