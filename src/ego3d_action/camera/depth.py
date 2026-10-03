@@ -173,38 +173,43 @@ def depth_to_world_points(
     return points_world, index
 
 
-def _window_points(
+def _frame_points(
     window: CameraWindow,
-    frame_ids: Array,
+    local_frame: int,
+    rows: Array,
+    cols: Array,
+    grid_r: Array,
+    grid_c: Array,
     *,
-    stride: int,
     min_depth: float,
     max_depth: float | None,
     min_confidence: float | None,
-) -> dict[tuple[int, int, int], Array]:
-    """World points of one window keyed by ``(frame, row, col)``."""
-    lookup: dict[tuple[int, int, int], Array] = {}
-    for frame in frame_ids:
-        local = int(frame) - window.start
-        if not 0 <= local < window.window.num_frames:
-            continue
-        conf = None
-        if window.depth_confidence is not None:
-            conf = window.depth_confidence[local]
-        points, index = depth_to_world_points(
-            window.depth[local],
-            window.intrinsics[local],
-            window.rotation_c2w[local],
-            window.translation_c2w[local],
-            stride=stride,
-            min_depth=min_depth,
-            max_depth=max_depth,
-            min_confidence=min_confidence,
-            depth_confidence=conf,
-        )
-        for point, (row, col, _) in zip(points, index, strict=False):
-            lookup[(int(frame), int(row), int(col))] = point
-    return lookup
+) -> tuple[Array, Array, Array | None]:
+    """Back-project the shared sampled grid for one frame without per-point objects."""
+    z = window.depth[local_frame][np.ix_(rows, cols)].reshape(-1)
+    mask = np.isfinite(z) & (z > min_depth)
+    if max_depth is not None:
+        mask &= z < max_depth
+
+    confidence = None
+    if min_confidence is not None and window.depth_confidence is not None:
+        confidence = window.depth_confidence[local_frame][np.ix_(rows, cols)].reshape(-1)
+        mask &= np.isfinite(confidence) & (confidence >= min_confidence)
+
+    if not np.any(mask):
+        return np.zeros((0, 3), dtype=np.float64), mask, confidence
+
+    z = z[mask]
+    k = window.intrinsics[local_frame]
+    fx, fy = k[0, 0], k[1, 1]
+    if fx == 0.0 or fy == 0.0:
+        raise StageIOError("intrinsics have a zero focal length")
+    x = (grid_c[mask] - k[0, 2]) / fx * z
+    y = (grid_r[mask] - k[1, 2]) / fy * z
+    points_cam = np.stack((x, y, z), axis=-1)
+    points_world = points_cam @ window.rotation_c2w[local_frame].T
+    points_world += window.translation_c2w[local_frame]
+    return points_world, mask, confidence
 
 
 def build_depth_correspondences(
@@ -231,66 +236,104 @@ def build_depth_correspondences(
     Raises:
         StageIOError: when the two windows share no frames.
     """
+    if stride <= 0:
+        raise StageIOError(f"stride must be positive, got {stride}")
     overlap_start = max(window_src.start, window_dst.start)
     overlap_end = min(window_src.end, window_dst.end)
     if overlap_end <= overlap_start:
         raise StageIOError(
             f"windows {window_src.name} and {window_dst.name} do not overlap"
         )
-    shared = np.arange(overlap_start, overlap_end, dtype=np.int64)
 
-    src_lookup = _window_points(
-        window_src,
-        shared,
-        stride=stride,
-        min_depth=min_depth,
-        max_depth=max_depth,
-        min_confidence=min_confidence,
-    )
-    dst_lookup = _window_points(
-        window_dst,
-        shared,
-        stride=stride,
-        min_depth=min_depth,
-        max_depth=max_depth,
-        min_confidence=min_confidence,
-    )
+    # Both windows are sampled on the same pixel coordinates. Restrict the grid
+    # to their common image area, then vectorise each frame's validity mask and
+    # back-projection instead of building a Python dict entry per depth sample.
+    height = min(window_src.depth.shape[1], window_dst.depth.shape[1])
+    width = min(window_src.depth.shape[2], window_dst.depth.shape[2])
+    rows = np.arange(0, height, stride, dtype=np.int64)
+    cols = np.arange(0, width, stride, dtype=np.int64)
+    grid_r, grid_c = np.meshgrid(rows, cols, indexing="ij")
+    grid_r = grid_r.reshape(-1)
+    grid_c = grid_c.reshape(-1)
 
-    keys = [key for key in src_lookup if key in dst_lookup]
-    if not keys:
+    src_points: list[Array] = []
+    dst_points: list[Array] = []
+    frame_ids: list[Array] = []
+    confidence_weights: list[Array] = []
+    use_confidence_weights = (
+        min_confidence is not None and window_src.depth_confidence is not None
+    )
+    for frame in range(overlap_start, overlap_end):
+        local_src = frame - window_src.start
+        local_dst = frame - window_dst.start
+        src_frame_points, src_valid, src_conf = _frame_points(
+            window_src,
+            local_src,
+            rows,
+            cols,
+            grid_r,
+            grid_c,
+            min_depth=min_depth,
+            max_depth=max_depth,
+            min_confidence=min_confidence,
+        )
+        dst_frame_points, dst_valid, _ = _frame_points(
+            window_dst,
+            local_dst,
+            rows,
+            cols,
+            grid_r,
+            grid_c,
+            min_depth=min_depth,
+            max_depth=max_depth,
+            min_confidence=min_confidence,
+        )
+        common = src_valid & dst_valid
+        if not np.any(common):
+            continue
+
+        src_points.append(src_frame_points[common[src_valid]])
+        dst_points.append(dst_frame_points[common[dst_valid]])
+        count = int(np.count_nonzero(common))
+        frame_ids.append(np.full(count, frame, dtype=np.int64))
+        if use_confidence_weights and src_conf is not None:
+            confidence_weights.append(np.clip(src_conf[common], 1e-3, None))
+
+    if not src_points:
         raise StageIOError(
             f"no shared depth samples between windows {window_src.name} and {window_dst.name}"
         )
-    keys.sort()
-    if max_points is not None and len(keys) > max_points:
-        step = int(np.ceil(len(keys) / max_points))
-        keys = keys[::step]
+
+    points_src = np.concatenate(src_points, axis=0)
+    points_dst = np.concatenate(dst_points, axis=0)
+    frames = np.concatenate(frame_ids)
+    weights = (
+        np.concatenate(confidence_weights)
+        if use_confidence_weights
+        else np.ones(points_src.shape[0], dtype=np.float64)
+    )
+
+    if max_points is not None and points_src.shape[0] > max_points:
+        step = int(np.ceil(points_src.shape[0] / max_points))
+        selection = slice(None, None, step)
+        points_src = points_src[selection]
+        points_dst = points_dst[selection]
+        frames = frames[selection]
+        weights = weights[selection]
         logger.info(
             "depth correspondences %s<->%s: subsampled to %d points (driver %d)",
             window_src.name,
             window_dst.name,
-            len(keys),
+            points_src.shape[0],
             max_points,
         )
-
-    points_src = np.stack([src_lookup[k] for k in keys], axis=0)
-    points_dst = np.stack([dst_lookup[k] for k in keys], axis=0)
-    frames = np.array([k[0] for k in keys], dtype=np.int64)
-
-    weights = np.ones(len(keys), dtype=np.float64)
-    if min_confidence is not None and window_src.depth_confidence is not None:
-        conf_vals = []
-        for frame, row, col in keys:
-            local = frame - window_src.start
-            conf_vals.append(float(window_src.depth_confidence[local, row, col]))
-        weights = np.clip(np.asarray(conf_vals, dtype=np.float64), 1e-3, None)
 
     logger.info(
         "depth correspondences %s -> %s: %d pairs over %d shared frames",
         window_src.name,
         window_dst.name,
-        len(keys),
-        shared.size,
+        points_src.shape[0],
+        overlap_end - overlap_start,
     )
     return Correspondence(
         points_src=points_src,

@@ -1,6 +1,6 @@
 # Architecture
 
-Last modified: 2026-09-26 (+08:00)
+Last modified: 2026-10-03 14:26 (+08:00)
 
 ## Dataset bridge (LeRobot v3 / HOT3D)
 
@@ -122,6 +122,11 @@ output.
 * `World-0` is the camera of the first frame; after stitching the trajectory is
   re-anchored with `camera_pose.normalize_to_first_camera`.
 * MANO topology lives once in `hand/mano.py` (`JOINT_PARENTS`, `bone_pairs()`).
+
+Depth correspondences use a shared subsampled pixel grid and vectorised per-frame
+validity/back-projection. This avoids allocating one Python dictionary entry per
+sampled depth pixel while preserving frame/row/column order, confidence filtering
+and the deterministic point cap.
 
 ## Why depth-derived Sim(3) and not camera centres
 

@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-10-03 14:26 (+08:00) - vectorized depth correspondence assembly
+
+Phase 4 no longer builds Python dictionaries keyed by every valid
+(frame, row, col) sample. It samples the shared pixel grid once and computes
+each overlapping frame's validity masks, confidence weights and back-projected
+points with NumPy arrays. Correspondence order and the deterministic maximum
+point cap remain unchanged; different image sizes are paired over their common
+pixel area.
+
+Regression coverage checks shared-frame pairing, NaN depth removal,
+confidence rejection and output weights. Focused tests: 9 passed; full suite:
+435 passed, 1 skipped. On 40 overlapping 416x416 frames at stride 8, the old
+and new outputs match; median pairing time fell from 0.932 s to 0.039 s
+(23.7x) over three runs, with 36,054 correspondences.
+
+
 ## 2026-10-02 12:30 (+08:00) - WiLoR hand backend, GT-alignment scoring, viewer overhaul, lint pass
 
 **WiLoR is now the hand backend for `hot3d_ep000`** (HaWoR stays available and

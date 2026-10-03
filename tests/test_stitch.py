@@ -142,3 +142,56 @@ def test_depth_correspondences_require_depth_variation(synthetic_scene: dict[str
     )
     with pytest.raises(StageIOError):
         align_window_pair(empty, empty, stride=8)
+
+
+def test_depth_correspondences_vectorize_common_valid_samples_and_confidence() -> None:
+    from ego3d_action.camera.depth import build_depth_correspondences
+
+    frames, height, width = 3, 3, 4
+    intrinsics = np.broadcast_to(
+        np.array([[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 1.0]]),
+        (frames, 3, 3),
+    ).copy()
+    rotations = np.broadcast_to(np.eye(3), (frames, 3, 3)).copy()
+    translations_src = np.zeros((frames, 3))
+    translations_dst = np.zeros((frames, 3))
+    translations_dst[:, 0] = 9.0
+    depth_src = np.full((frames, height, width), 2.0)
+    depth_dst = np.full((frames, height, width), 2.0)
+    confidence_src = np.full_like(depth_src, 0.8)
+    confidence_dst = np.ones_like(depth_dst)
+
+    # The windows share global frames 1 and 2. Each invalid sample must be
+    # excluded from both paired arrays, including confidence-filtered samples.
+    depth_src[1, 0, 0] = np.nan
+    depth_dst[0, 0, 1] = np.nan
+    confidence_src[1, 0, 2] = 0.2
+    src = CameraWindow(
+        window=WindowRange(index=0, start=0, end=3),
+        rotation_c2w=rotations,
+        translation_c2w=translations_src,
+        intrinsics=intrinsics,
+        depth=depth_src,
+        depth_confidence=confidence_src,
+    )
+    dst = CameraWindow(
+        window=WindowRange(index=1, start=1, end=4),
+        rotation_c2w=rotations,
+        translation_c2w=translations_dst,
+        intrinsics=intrinsics,
+        depth=depth_dst,
+        depth_confidence=confidence_dst,
+    )
+
+    correspondences = build_depth_correspondences(
+        src, dst, stride=1, min_confidence=0.5, max_points=None
+    )
+
+    assert correspondences.count == 21
+    frame_ids, frame_counts = np.unique(correspondences.frames, return_counts=True)
+    assert np.array_equal(frame_counts, [9, 12])
+    assert np.array_equal(frame_ids, [1, 2])
+    assert np.allclose(
+        correspondences.points_dst - correspondences.points_src, [9.0, 0.0, 0.0]
+    )
+    assert np.allclose(correspondences.weights, 0.8)
