@@ -1,11 +1,13 @@
 # Implementation status
 
-Last modified: 2026-09-29 (+08:00)
+Last modified: 2026-10-06 16:07 (+08:00)
 
-Test suite: **392 passed** in ~85 s on a CPU-only interpreter
+Test suite: **438 passed**, 1 skipped in ~86 s on a CPU-only interpreter
 (`conda run -n ego3d_base python -m pytest -q`). 119 of those are newer than
 the M0 suite: the sharding/provenance/executor/batch modules, the sharded E2E
 comparison, and the HaWoR focal-resolution + cache-invalidation tests.
+
+HaWoR now runs after Phase 4 stitches the VGGT camera windows. Batch provenance hashes those camera inputs, so a changed camera invalidates stale hand output.
 
 The `-vsync` wart is gone: `io/video.py` probes ffmpeg and picks
 `-fps_mode passthrough` (5.1+) over `-vsync 0`, so any ffmpeg works.

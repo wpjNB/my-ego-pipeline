@@ -194,24 +194,61 @@ def write_camera_trajectory(
                 "(scripts/run_camera.py) or omit the flag to use a constant camera"
             )
         coverage = np.zeros(count, dtype=bool)
-        for path in candidates:
-            window = load_camera_window(path)
-            first, last = window.window.start, window.window.end
-            for frame in range(max(first, start_idx), min(last, end_idx)):
-                local = frame - first
-                slot = frame - start_idx
-                rotations[slot] = window.rotation_c2w[local]
-                translations[slot] = window.translation_c2w[local]
-                coverage[slot] = True
-        if not coverage.all():
-            missing = int((~coverage).sum())
+        # Prefer the *stitched* trajectory: each raw VGGT window is normalised
+        # to its own first frame, so adjacent windows disagree on shared frames
+        # (~4 deg / ~2 cm, measured on hot3d_ep000) and the naive per-frame
+        # assembly produced a pose stream that JUMPED at every window boundary -
+        # the infiller's temporal model then operated on discontinuous data.
+        # Phase 4 (run_stitch) aligns all windows into one World-0 frame; use it
+        # whenever it exists.
+        stitched_path = windows_dir.parent / "stitched_camera.npz"
+        if stitched_path.is_file():
+            from ego3d_action.camera.stitch import load_stitched_camera  # noqa: PLC0415
+
+            stitched = load_stitched_camera(stitched_path)
+            if stitched.num_frames < end_idx:
+                raise FileNotFoundError(
+                    f"{stitched_path} covers {stitched.num_frames} frames but the clip "
+                    f"needs {end_idx}; re-run scripts/run_stitch.py"
+                )
+            rotations[:] = stitched.rotation_c2w[start_idx:end_idx]
+            translations[:] = stitched.translation_c2w[start_idx:end_idx]
+            coverage[:] = np.asarray(stitched.valid, dtype=bool)[start_idx:end_idx]
+            if not coverage.all():
+                missing = int((~coverage).sum())
+                print(
+                    f"WARNING: the stitched camera marks {missing} of {count} frames "
+                    f"([{start_idx}, {end_idx})) invalid; those fall back to the "
+                    "identity camera.",
+                    file=sys.stderr,
+                )
+            source = "vggt-stitched"
+        else:
             print(
-                f"WARNING: the VGGT windows do not cover {missing} of {count} frames "
-                f"([{start_idx}, {end_idx})); those fall back to the identity camera. "
-                "Check camera.window/camera.overlap against this clip's frame count.",
+                f"WARNING: {stitched_path} is missing, so the poses come from the raw "
+                "VGGT windows. Raw windows have per-window world frames, so this pose "
+                "stream jumps at window boundaries; run Phase 4 (scripts/run_stitch.py) "
+                "first for a consistent world frame.",
                 file=sys.stderr,
             )
-        source = "vggt"
+            for path in candidates:
+                window = load_camera_window(path)
+                first, last = window.window.start, window.window.end
+                for frame in range(max(first, start_idx), min(last, end_idx)):
+                    local = frame - first
+                    slot = frame - start_idx
+                    rotations[slot] = window.rotation_c2w[local]
+                    translations[slot] = window.translation_c2w[local]
+                    coverage[slot] = True
+            if not coverage.all():
+                missing = int((~coverage).sum())
+                print(
+                    f"WARNING: the VGGT windows do not cover {missing} of {count} frames "
+                    f"([{start_idx}, {end_idx})); those fall back to the identity camera. "
+                    "Check camera.window/camera.overlap against this clip's frame count.",
+                    file=sys.stderr,
+                )
+            source = "vggt-raw-windows"
 
     # VGGT outputs metric depth, so no extra scale correction is needed.
     quaternions = _matrix_to_quaternion(rotations)
@@ -547,8 +584,14 @@ def to_camera_space(
         raise ValueError(
             f"t_w2c must be [{joints.shape[0]}, 3], got {translation.shape}"
         )
+    # X_cam = R_w2c @ X_world + t_w2c: the matrix is applied on the LEFT, so the
+    # einsum must contract the matrix's SECOND index with the point ("tij"),
+    # never the first ("tji" = R^T). The "tji" form mixes R_c2w into a w2c
+    # transform and measured 276 mm median error when recovering HOT3D
+    # camera-space hands from their world positions; "tij" recovers them at
+    # 0.0 mm. The old identity-rotation unit test could not see the difference.
     camera_space = (
-        np.einsum("tji,thnj->thni", rotation, joints) + translation[:, None, None, :]
+        np.einsum("tij,thnj->thni", rotation, joints) + translation[:, None, None, :]
     )
     hand_valid = np.asarray(pred_valid, dtype=np.float64).T > 0.5
     all_valid = hand_valid & np.asarray(valid, dtype=bool)
@@ -563,8 +606,13 @@ def to_camera_space(
             raise ValueError(
                 f"vertices must be [{joints.shape[0]}, 2, V, 3], got {verts.shape}"
             )
+        # same left-multiply rule as the joints above, but the vertex array's
+        # last axis is the 3-D coordinate: it must carry the *contracted*
+        # index j ("tvnj"), not the output index i. Getting this wrong - the
+        # old "tji,tvni->tvni" did - scales each axis by a matrix row/column
+        # sum instead of rotating (caught by the non-identity round-trip test).
         camera_vertices = (
-            np.einsum("tji,tvni->tvni", rotation, verts) + translation[:, None, None, :]
+            np.einsum("tij,tvnj->tvni", rotation, verts) + translation[:, None, None, :]
         )
         result["vertices_camera"] = np.where(
             all_valid[:, :, None, None], camera_vertices, np.nan

@@ -63,12 +63,14 @@ logger = logging.getLogger(__name__)
 SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "scripts"
 
 #: Stage name -> script. ``shardable`` says the stage can be split by window.
+# HaWoR consumes both the camera-window focal and the globally stitched
+# camera trajectory, so insertion order is the per-clip dependency order.
 STAGE_SCRIPTS: dict[str, str] = {
     "preprocess": "run_preprocess.py",
     "detection": "run_detection.py",
-    "hand": "run_hand.py",
     "camera": "run_camera.py",
     "stitch": "run_stitch.py",
+    "hand": "run_hand.py",
     "fusion": "run_fusion.py",
     "refine": "run_refine.py",
 }
@@ -454,7 +456,14 @@ def input_hashes_for(
         # frame set (hashing every JPEG would cost more than detecting them).
         candidates.append(root / "metadata.json")
     elif unit.stage == "hand":
-        candidates.append(root / "detection" / "detection.npz")
+        candidates.extend(
+            (root / "metadata.json", root / "detection" / "detection.npz")
+        )
+        if unit.mode == "blend-only":
+            candidates.extend(sorted((root / "hand" / "windows").glob("*.npz")))
+        else:
+            candidates.extend(sorted((root / "camera" / "windows").glob("*.npz")))
+            candidates.append(root / "camera" / "stitched_camera.npz")
     elif unit.stage == "camera":
         candidates.append(root / "metadata.json")
     elif unit.stage == "stitch":
