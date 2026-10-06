@@ -1,6 +1,6 @@
 # Ablation table
 
-Last modified: 2026-10-06 19:15 (+08:00)
+Last modified: 2026-10-06 21:49 (+08:00)
 
 ## Mock backend (CPU, 300 frames, deterministic - plumbing validation only)
 
@@ -430,3 +430,20 @@ are 42.3 to 39.2 px. The saved hand arrays now use the input focal, and Phase
 the camera error remains `162.14 mm` because the VGGT camera trajectory was
 unchanged. The full report is
 `data/hot3d/P0002_clip001971/trajectory/eval_official.json`.
+
+## P0003 WiLoR focal rerun (2026-10-06)
+
+`P0003_clip002059` was rerun with WiLoR using the undistorted input-camera
+focal (`610.069 px`) instead of the saved VGGT fallback (`635.988 px`), with
+the same detections, crop rescale (`2.5`) and one smoothing pass. On shared GT
+frames, raw camera-space wrist reprojection medians improved from `36.6 / 40.2`
+to `25.1 / 24.5 px` (left / right); 3D wrist errors improved from `80.3 / 28.5`
+to `61.9 / 16.0 mm`.
+
+The refreshed full trajectory scored Action-MPJPE `42.7316 mm`, coverage
+`99.67 %`, wrist `47.7111 mm`, depth `29.7469 mm`; camera error remained
+`36.6103 mm` because the VGGT camera trajectory was unchanged. The standard
+report is `data/hot3d/P0003_clip002059/trajectory/eval_official.json`, and the
+full-folder aggregate `data/hot3d/eval_all_20261006.md` was refreshed. The
+`02_wilor.mp4` preview applies the configured 0.5 image-space box nudge for
+visualization only; metric arrays are not nudged.
