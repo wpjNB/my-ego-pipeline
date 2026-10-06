@@ -1,6 +1,6 @@
 # Runbook: how to run this project
 
-Last modified: 2026-10-06 18:11 (+08:00)
+Last modified: 2026-10-06 18:48 (+08:00)
 
 Two paths. Path A needs no weights and no GPU; Path B is the real pipeline.
 Start every session with the audit:
@@ -123,6 +123,7 @@ $RUN scripts/run_stitch.py --config $CFG --clip $CLIP
 #    -> camera/stitched_camera.npz, stitched/sim3_transforms.npz
 
 # 4 - HaWoR 16/8 (GPU env ego3d_hawor; consumes the stitched camera path)
+#    focal priority: hand.focal override -> undistorted input image_camera -> VGGT estimate
 $RUN scripts/run_hand.py --config $CFG --clip $CLIP
 #    -> hand/hand_camera.npz, hand/windows/*.npz (+ 02_hawor.mp4)
 #    prints per-pair: scale, rmse, inlier%, rotation

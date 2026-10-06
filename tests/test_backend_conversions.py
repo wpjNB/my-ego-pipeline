@@ -667,9 +667,8 @@ def test_resolve_focal_prefers_real_intrinsics_over_the_600px_default(
     overlay_K = runner._camera_intrinsics(layout)
     assert abs(overlay_K[0, 0] - median_focal) < 0.05, overlay_K
 
-    # 3d. A known undistorted input-frame camera controls overlay projection,
-    #     while the model focal remains the Phase-3 estimate (GT labels stay
-    #     out of the prediction path).
+    # 3d. A known undistorted input-frame camera controls both reconstruction
+    #     focal and overlay projection; ground-truth labels remain unused.
     image_camera = {
         "model": "pinhole",
         "undistorted": True,
@@ -686,7 +685,7 @@ def test_resolve_focal_prefers_real_intrinsics_over_the_600px_default(
     overlay_K = runner._camera_intrinsics(layout)
     assert np.allclose(overlay_K, image_camera["intrinsics"])
     focal, source = runner.resolve_focal(layout, _Config({}))
-    assert abs(focal - median_focal) < 0.05 and source.startswith("Phase 3")
+    assert focal == 300.0 and source == "input frame camera calibration"
 
     viewer = load_script("render_viewer_mod_calibration", "scripts/render_viewer.py")
     viewer_K = viewer._ego_intrinsics(

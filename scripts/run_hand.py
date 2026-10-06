@@ -265,19 +265,14 @@ def resolve_focal(layout, config) -> tuple[float | None, str]:
     resolves a real value in priority order and reports which it used, so the
     mistake cannot happen silently again.
 
-    Order: ``hand.focal`` in the config -> the intrinsics of Phase 3's camera
-    windows (the pipeline's own *estimate*). The reference trajectory's
-    calibrated ``camera_K`` is deliberately NOT consulted here: this stage
-    produces predictions, and predictions must never read the reference -
-    the deployment contract is "RGB in". Evaluation artefacts (scoring,
-    gt_vs_pred overlays) may use the calibration; the prediction path
-    cannot. The camera stage therefore runs BEFORE the hand stage so the
-    estimate exists (see scripts/run_viewer_pipeline.sh).
+    Order: explicit hand.focal config -> validated undistorted image_camera
+    metadata from the source frames -> Phase 3's canonical VGGT estimate.
+    The ground-truth trajectory camera_K is never read here; image_camera
+    describes the actual input pixel grid rather than a reference label.
     Returns ``(None, "unavailable")`` when nothing can answer, and the caller
     then warns instead of guessing.
     """
-    from ego3d_action.camera.depth import scale_intrinsics
-    from ego3d_action.io.serialization import load_npz
+    from ego3d_action.camera.depth import canonical_intrinsics, input_frame_intrinsics
 
     configured = config.get("hand.focal", None)
     if configured:
@@ -287,10 +282,11 @@ def resolve_focal(layout, config) -> tuple[float | None, str]:
     width = int(metadata.get("width", 320))
     height = int(metadata.get("height", 240))
 
-    # One canonical K per clip (median across the windows); the overlays
-    # resolve the exact same matrix (see ego3d_action.camera.depth), so the
-    # render always draws through the camera the stage reconstructed in.
-    from ego3d_action.camera.depth import canonical_intrinsics
+    # Use calibrated, undistorted input-camera metadata for both reconstruction
+    # and projection when it exists. VGGT remains the RGB-only fallback.
+    K = input_frame_intrinsics(metadata, (width, height))
+    if K is not None and np.isfinite(K[0, 0]) and K[0, 0] > 0.0:
+        return float(K[0, 0]), "input frame camera calibration"
 
     K = canonical_intrinsics(layout.camera_windows_dir, (width, height))
     if K is not None and np.isfinite(K[0, 0]) and K[0, 0] > 0.0:
