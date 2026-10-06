@@ -52,6 +52,47 @@ def test_draw_hand_projection_draws_a_skeleton() -> None:
     assert drawn.sum() > 0
 
 
+def test_nudge_hand_overlay_toward_boxes_is_display_only() -> None:
+    intrinsics = np.array(
+        [[100.0, 0.0, 32.0], [0.0, 100.0, 24.0], [0.0, 0.0, 1.0]]
+    )
+    joints = np.zeros((2, 21, 3), dtype=np.float64)
+    joints[..., 2] = 1.0
+    vertices = np.zeros((2, 4, 3), dtype=np.float64)
+    vertices[..., 2] = 1.0
+    vertices[0, :, 0] = [-0.1, 0.1, -0.1, 0.1]
+    vertices[0, :, 1] = [-0.1, -0.1, 0.1, 0.1]
+    boxes = np.array([[42.0, 34.0, 62.0, 54.0], [0.0, 0.0, 10.0, 10.0]])
+    valid = np.array([True, False])
+    joints_before = joints.copy()
+    vertices_before = vertices.copy()
+
+    nudged_joints, nudged_vertices = overlay.nudge_hand_overlay_toward_boxes(
+        joints, vertices, boxes, intrinsics, valid, fraction=0.5
+    )
+
+    source_pixels = overlay.project_points(intrinsics, joints_before[0])
+    target_pixels = overlay.project_points(intrinsics, nudged_joints[0])
+    assert np.allclose(target_pixels - source_pixels, [10.0, 10.0])
+    assert np.array_equal(nudged_joints[1], joints_before[1])
+    assert np.array_equal(nudged_vertices[1], vertices_before[1])
+    assert np.array_equal(joints, joints_before)
+    assert np.array_equal(vertices, vertices_before)
+    assert np.array_equal(nudged_vertices[..., 2], vertices_before[..., 2])
+
+
+def test_nudge_hand_overlay_validates_fraction() -> None:
+    with pytest.raises(StageIOError, match=r"fraction must be in"):
+        overlay.nudge_hand_overlay_toward_boxes(
+            np.zeros((2, 21, 3)),
+            np.ones((2, 4, 3)),
+            np.ones((2, 4)),
+            np.eye(3),
+            np.ones(2, dtype=bool),
+            fraction=1.5,
+        )
+
+
 def test_draw_hand_projection_validates_shapes() -> None:
     with pytest.raises(StageIOError):
         overlay.draw_hand_projection(

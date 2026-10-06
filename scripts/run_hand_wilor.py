@@ -75,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
 
         detection = load_detection(layout)
         num_frames = int(np.asarray(detection["valid"]).shape[0])
+        box_nudge = float(context.config.get("visualization.wilor_box_nudge", 0.5))
         focal, focal_source = resolve_focal(layout, context.config)
         if focal is None:
             # Unlike HaWoR (which silently falls back to 600 px), WiLoR *cannot*
@@ -165,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
                 "rescale": rescale,
                 "smooth_passes": smooth_passes,
                 "coverage": float(valid.mean()),
+                "visualization_wilor_box_nudge": box_nudge,
                 "world_frame": "camera",
                 "units": "meter",
             },
@@ -187,6 +189,8 @@ def main(argv: list[str] | None = None) -> int:
                 fps=float(context.config.get("visualization.fps") or frames.fps),
                 vertices_camera=verts_smooth,
                 faces=faces,
+                boxes=np.asarray(detection["boxes"], dtype=np.float64),
+                box_nudge=box_nudge,
             )
             print(f"wrote {out_video}")
         return 0

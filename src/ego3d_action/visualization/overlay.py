@@ -120,6 +120,80 @@ def draw_hand_projection(
     return canvas
 
 
+def nudge_hand_overlay_toward_boxes(
+    joints_camera: Array,
+    vertices_camera: Array,
+    boxes: Array,
+    intrinsics: Array,
+    valid: Array,
+    *,
+    fraction: float = 0.5,
+) -> tuple[Array, Array]:
+    """Shift a rendered hand partway toward its tracked box in image space.
+
+    This visualization-only correction addresses WiLoR's residual 2D root
+    translation error. It projects the MANO vertices, measures their centroid,
+    then applies a fraction of the centroid-to-box-center delta to both the
+    mesh and skeleton. The camera-space arrays on disk are never modified.
+    """
+    joints = np.asarray(joints_camera, dtype=np.float64).copy()
+    vertices = np.asarray(vertices_camera, dtype=np.float64).copy()
+    box_array = np.asarray(boxes, dtype=np.float64)
+    hand_valid = np.asarray(valid, dtype=bool)
+    K = np.asarray(intrinsics, dtype=np.float64)
+
+    if joints.shape != (2, 21, 3):
+        raise StageIOError(f"joints_camera must be [2, 21, 3], got {joints.shape}")
+    if vertices.ndim != 3 or vertices.shape[0] != 2 or vertices.shape[2] != 3:
+        raise StageIOError(f"vertices_camera must be [2, V, 3], got {vertices.shape}")
+    if box_array.shape != (2, 4):
+        raise StageIOError(f"boxes must be [2, 4], got {box_array.shape}")
+    if hand_valid.shape != (2,):
+        raise StageIOError(f"valid must be [2], got {hand_valid.shape}")
+    if K.shape == (3, 3):
+        K = np.broadcast_to(K, (2, 3, 3))
+    if K.shape != (2, 3, 3):
+        raise StageIOError(f"intrinsics must be [3, 3] or [2, 3, 3], got {K.shape}")
+    if not np.isfinite(fraction) or not 0.0 <= fraction <= 1.0:
+        raise StageIOError(f"fraction must be in [0, 1], got {fraction}")
+
+    for hand in range(2):
+        if not hand_valid[hand] or not np.isfinite(box_array[hand]).all():
+            continue
+        if box_array[hand, 2] <= box_array[hand, 0] or box_array[hand, 3] <= box_array[hand, 1]:
+            continue
+        points = vertices[hand]
+        pixels = project_points(K[hand], points)
+        visible = (
+            np.isfinite(pixels).all(axis=1)
+            & np.isfinite(points[:, 2])
+            & (points[:, 2] > 1e-6)
+        )
+        if not visible.any():
+            continue
+        predicted_center = np.mean(pixels[visible], axis=0)
+        target_center = np.array(
+            [
+                (box_array[hand, 0] + box_array[hand, 2]) / 2.0,
+                (box_array[hand, 1] + box_array[hand, 3]) / 2.0,
+            ],
+            dtype=np.float64,
+        )
+        delta = (target_center - predicted_center) * float(fraction)
+        fx, fy = K[hand, 0, 0], K[hand, 1, 1]
+        skew = K[hand, 0, 1]
+        if not np.isfinite([fx, fy, skew]).all() or fx <= 0.0 or fy <= 0.0:
+            raise StageIOError(f"invalid focal matrix for hand {hand}: {K[hand]}")
+        shift_y = delta[1] / fy
+        shift_x = (delta[0] - skew * shift_y) / fx
+        vertices[hand, :, 0] += shift_x * vertices[hand, :, 2]
+        vertices[hand, :, 1] += shift_y * vertices[hand, :, 2]
+        joints[hand, :, 0] += shift_x * joints[hand, :, 2]
+        joints[hand, :, 1] += shift_y * joints[hand, :, 2]
+
+    return joints, vertices
+
+
 def draw_hand_mesh(
     frame: Array,
     vertices_camera: Array,
@@ -289,6 +363,8 @@ def write_hand_video(
     fps: float = 30.0,
     vertices_camera: Array | None = None,
     faces: Sequence[Array] | None = None,
+    boxes: Array | None = None,
+    box_nudge: float = 0.0,
 ) -> Path:
     """Write ``02_hawor.mp4``: RGB + projected hands.
 
@@ -296,7 +372,9 @@ def write_hand_video(
     MANO mesh is rasterised (the MINT-style overlay) with the 21-joint skeleton
     drawn on top in :data:`SKELETON_COLOUR` - the mesh gives the shape, the
     skeleton the estimated articulation; without vertices the writer falls back
-    to the skeleton alone.
+    to the skeleton alone. WiLoR callers may pass boxes and a positive box_nudge
+    for an explicitly labeled, image-space-only root adjustment; saved 3D arrays
+    remain unchanged.
     """
     cv2 = require_cv2()
     frames = list(frame_paths)
@@ -312,6 +390,17 @@ def write_hand_video(
     )
     if vertices is not None and vertices.shape[0] < len(frames):
         raise StageIOError(f"vertices cover {vertices.shape[0]} frames but {len(frames)} were given")
+    box_array = None if boxes is None else np.asarray(boxes, dtype=np.float64)
+    if box_array is not None and (box_array.ndim != 3 or box_array.shape[1:] != (2, 4)):
+        raise StageIOError(f"boxes must be [T, 2, 4], got {box_array.shape}")
+    if box_array is not None and box_array.shape[0] < len(frames):
+        raise StageIOError(f"boxes cover {box_array.shape[0]} frames but {len(frames)} were given")
+    if not np.isfinite(box_nudge) or not 0.0 <= box_nudge <= 1.0:
+        raise StageIOError(f"box_nudge must be in [0, 1], got {box_nudge}")
+    if box_nudge > 0.0 and box_array is None:
+        raise StageIOError("boxes are required when box_nudge is enabled")
+    if box_nudge > 0.0 and vertices is None:
+        raise StageIOError("vertices_camera are required when box_nudge is enabled")
 
     target = Path(out_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -326,17 +415,52 @@ def write_hand_video(
             if frame is None:
                 raise StageIOError(f"cannot decode {path}")
             camera_valid = np.asarray(valid[index], dtype=bool) & np.isfinite(joints[index]).all(axis=(1, 2))
-            if vertices is not None and faces is not None:
-                frame_valid = camera_valid & np.isfinite(vertices[index]).all(axis=(1, 2))
+            frame_joints = joints[index]
+            frame_vertices = None if vertices is None else vertices[index]
+            if frame_vertices is not None and box_array is not None and box_nudge > 0.0:
+                frame_joints, frame_vertices = nudge_hand_overlay_toward_boxes(
+                    frame_joints,
+                    frame_vertices,
+                    box_array[index],
+                    intrinsics[index],
+                    camera_valid,
+                    fraction=box_nudge,
+                )
+            if frame_vertices is not None and faces is not None:
+                frame_valid = camera_valid & np.isfinite(frame_vertices).all(axis=(1, 2))
                 canvas = draw_hand_mesh(
-                    frame, vertices[index], faces, intrinsics[index], frame_valid
+                    frame, frame_vertices, faces, intrinsics[index], frame_valid
                 )
                 canvas = draw_hand_projection(
-                    canvas, joints[index], intrinsics[index], camera_valid,
+                    canvas, frame_joints, intrinsics[index], camera_valid,
                     colour=SKELETON_COLOUR,
                 )
             else:
                 canvas = draw_hand_projection(frame, joints[index], intrinsics[index], camera_valid)
+            if box_nudge > 0.0:
+                cv2.rectangle(canvas, (0, 0), (360, 28), (20, 22, 26), -1)
+                cv2.putText(
+                    canvas,
+                    f"2D box nudge {box_nudge:.0%} (visual only)",
+                    (8, 19),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (240, 240, 240),
+                    1,
+                    cv2.LINE_AA,
+                )
+            if box_nudge > 0.0:
+                cv2.rectangle(canvas, (0, 0), (min(width - 1, 340), 26), (20, 22, 26), -1)
+                cv2.putText(
+                    canvas,
+                    f"2D box nudge {box_nudge:.0%} (visual only)",
+                    (8, 19),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45,
+                    (240, 240, 240),
+                    1,
+                    cv2.LINE_AA,
+                )
             writer.write(canvas)
     finally:
         writer.release()

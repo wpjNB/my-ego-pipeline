@@ -1,6 +1,6 @@
 # Runbook: how to run this project
 
-Last modified: 2026-10-06 16:07 (+08:00)
+Last modified: 2026-10-06 16:49 (+08:00)
 
 Two paths. Path A needs no weights and no GPU; Path B is the real pipeline.
 Start every session with the audit:
@@ -50,6 +50,8 @@ Interpretation rules: `01_detection.mp4` / `02_hawor.mp4` written with
 21-joint stick figure on a *grasping* hand looks fanned out because the
 fingertips curl behind the palm - look at the wrist marker or the projected mesh
 instead.
+
+WiLoR EGO previews apply the configured 2D box nudge to rendered pixels only; the video labels it and saved 3D predictions remain unchanged.
 
 What `make demo` prints on this machine (CPU, mock):
 
