@@ -113,6 +113,73 @@ def draw_hand_projection(
     return canvas
 
 
+def nudge_hand_overlay_toward_boxes(
+    joints_camera: Array,
+    vertices_camera: Array,
+    boxes: Array,
+    intrinsics: Array,
+    valid: Array,
+    *,
+    fraction: float = 0.5,
+) -> tuple[Array, Array]:
+    """Shift a rendered hand partway toward its tracked box in image space.
+
+    This display-only correction addresses residual 2D root translation error.
+    It shifts copied MANO vertices and joints in camera x/y while preserving
+    their depth; saved camera-space arrays remain unchanged.
+    """
+    joints = np.asarray(joints_camera, dtype=np.float64).copy()
+    vertices = np.asarray(vertices_camera, dtype=np.float64).copy()
+    box_array = np.asarray(boxes, dtype=np.float64)
+    hand_valid = np.asarray(valid, dtype=bool)
+    K = np.asarray(intrinsics, dtype=np.float64)
+
+    if joints.shape != (2, 21, 3):
+        raise StageIOError(f"joints_camera must be [2, 21, 3], got {joints.shape}")
+    if vertices.ndim != 3 or vertices.shape[0] != 2 or vertices.shape[2] != 3:
+        raise StageIOError(f"vertices_camera must be [2, V, 3], got {vertices.shape}")
+    if box_array.shape != (2, 4):
+        raise StageIOError(f"boxes must be [2, 4], got {box_array.shape}")
+    if hand_valid.shape != (2,):
+        raise StageIOError(f"valid must be [2], got {hand_valid.shape}")
+    if K.shape == (3, 3):
+        K = np.broadcast_to(K, (2, 3, 3))
+    if K.shape != (2, 3, 3):
+        raise StageIOError(f"intrinsics must be [3, 3] or [2, 3, 3], got {K.shape}")
+    if not np.isfinite(fraction) or not 0.0 <= fraction <= 1.0:
+        raise StageIOError(f"fraction must be in [0, 1], got {fraction}")
+
+    for hand in range(2):
+        if not hand_valid[hand] or not np.isfinite(box_array[hand]).all():
+            continue
+        x1, y1, x2, y2 = box_array[hand]
+        if x2 <= x1 or y2 <= y1:
+            continue
+        points = vertices[hand]
+        pixels = project_points(K[hand], points)
+        visible = (
+            np.isfinite(pixels).all(axis=1)
+            & np.isfinite(points[:, 2])
+            & (points[:, 2] > 1e-6)
+        )
+        if not visible.any():
+            continue
+        predicted_center = np.mean(pixels[visible], axis=0)
+        target_center = np.array([(x1 + x2) / 2.0, (y1 + y2) / 2.0])
+        delta = (target_center - predicted_center) * float(fraction)
+        fx, fy, skew = K[hand, 0, 0], K[hand, 1, 1], K[hand, 0, 1]
+        if not np.isfinite([fx, fy, skew]).all() or fx <= 0.0 or fy <= 0.0:
+            raise StageIOError(f"invalid focal matrix for hand {hand}: {K[hand]}")
+        shift_y = delta[1] / fy
+        shift_x = (delta[0] - skew * shift_y) / fx
+        vertices[hand, :, 0] += shift_x * vertices[hand, :, 2]
+        vertices[hand, :, 1] += shift_y * vertices[hand, :, 2]
+        joints[hand, :, 0] += shift_x * joints[hand, :, 2]
+        joints[hand, :, 1] += shift_y * joints[hand, :, 2]
+
+    return joints, vertices
+
+
 def draw_hand_mesh(
     frame: Array,
     vertices_camera: Array,

@@ -1,6 +1,6 @@
 # Architecture
 
-Last modified: 2026-10-06 16:07 (+08:00)
+Last modified: 2026-10-06 16:49 (+08:00)
 
 ## Dataset bridge (LeRobot v3 / HOT3D)
 
@@ -91,6 +91,10 @@ HaWoR hand reconstruction. HaWoR needs the estimated focal from the windows and
 a continuous World-0 camera path for its infiller; each raw VGGT window has its
 own local world gauge. The single-clip pipeline, batch planner and viewer
 pipeline all follow this order.
+
+WiLoR EGO overlays apply the configured half-step toward the tracked box center
+for display only. The corrected projection is used for the mesh and skeleton
+together; camera-space and world-space prediction arrays stay unchanged.
 
 | Phase | Module | Artefact | Notes |
 | --- | --- | --- | --- |

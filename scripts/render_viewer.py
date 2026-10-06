@@ -28,9 +28,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import render_world_space as world  # the WORLD SPACE drawing reuse
 from ego3d_action.cli import base_parser, build_context, fail  # noqa: E402
 from ego3d_action.errors import Ego3DActionError, StageIOError  # noqa: E402
-from ego3d_action.io.serialization import load_npz  # noqa: E402
+from ego3d_action.io.artefacts import load_detection  # noqa: E402
+from ego3d_action.io.serialization import load_json, load_npz  # noqa: E402
 from ego3d_action.visualization.overlay import (  # noqa: E402
     draw_hand_mesh,
+    draw_hand_projection,
+    nudge_hand_overlay_toward_boxes,
     require_cv2,
     transcode_to_h264,
 )
@@ -63,19 +66,30 @@ def _ego_intrinsics(viz_dir: Path, frames_dir: Path, size: tuple[int, int]):
     )
 
 
-def _ego_panel(cv2, frame_path: Path, vertices, intrinsics, valid, faces, *, target_total: int) -> np.ndarray:
-    """RGB frame + MANO mesh + validity badges, resized to the panel height."""
+def _ego_panel(
+    cv2, frame_path: Path, vertices, joints, intrinsics, valid, faces, *,
+    boxes, box_nudge: float, target_total: int,
+) -> np.ndarray:
+    """RGB frame + MANO mesh, skeleton and validity badges."""
     frame = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
     if frame is None:
         raise StageIOError(f"cannot decode {frame_path}")
     hand_valid = np.asarray(valid, dtype=bool) & np.isfinite(vertices).all(axis=(1, 2))
-    canvas = draw_hand_mesh(frame, vertices, faces, intrinsics, hand_valid)
+    draw_vertices = np.asarray(vertices, dtype=np.float64)
+    draw_joints = np.asarray(joints, dtype=np.float64)
+    fit_label = ""
+    if box_nudge > 0.0:
+        draw_joints, draw_vertices = nudge_hand_overlay_toward_boxes(
+            draw_joints, draw_vertices, boxes, intrinsics, hand_valid, fraction=box_nudge
+        )
+        fit_label = "   2D box nudge (preview only)"
+    canvas = draw_hand_mesh(frame, draw_vertices, faces, intrinsics, hand_valid)
+    canvas = draw_hand_projection(canvas, draw_joints, intrinsics, hand_valid)
     badges = f"left: {'yes' if hand_valid[0] else 'NO '}   right: {'yes' if hand_valid[1] else 'NO '}"
     strip = np.full((HEADER_HEIGHT, canvas.shape[1], 3), EGO_HEADER_BG, dtype=np.uint8)
-    cv2.putText(strip, f"EGO VIEW - MANO reprojected   {badges}", (8, 18),
+    cv2.putText(strip, f"EGO VIEW - MANO mesh + skeleton{fit_label}   {badges}", (8, 18),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (240, 240, 240), 1, cv2.LINE_AA)
     canvas = np.vstack([strip, canvas])
-    # the world panel (strip + panel_h) sets the total height; match it
     scale = target_total / canvas.shape[0]
     return cv2.resize(canvas, (int(canvas.shape[1] * scale), target_total))
 
@@ -93,9 +107,17 @@ def main(argv: list[str] | None = None) -> int:
             return fail("--clip is required")
         cv2 = require_cv2()
         viz = layout.visualization_dir
-        hand = load_npz(layout.hand_path, required=("vertices_camera", "valid"))
+        hand = load_npz(layout.hand_path, required=("vertices_camera", "joints_camera", "valid"))
         vertices = np.asarray(hand["vertices_camera"], dtype=np.float64)
+        joints = np.asarray(hand["joints_camera"], dtype=np.float64)
         hand_valid = np.asarray(hand["valid"], dtype=bool)
+        hand_metadata = load_json(layout.hand_dir / "metadata.json")
+        detection = load_detection(layout)
+        box_nudge = (
+            float(context.config.get("visualization.wilor_box_nudge", 0.5))
+            if hand_metadata.get("backend") == "wilor"
+            else 0.0
+        )
         tracks = [world._load("PRED", layout.trajectory_dir / "trajectory.npz")]
         if args.gt:
             tracks.append(world._load("GT", layout.trajectory_dir / "ground_truth.npz"))
@@ -103,8 +125,15 @@ def main(argv: list[str] | None = None) -> int:
         frames = sorted(Path(layout.frames_dir).glob("*.jpg"))
         if not frames:
             return fail("no frames found")
-        total = min(len(frames), vertices.shape[0], tracks[0]["joints"].shape[0])
-        size = (512, 512)
+        total = min(
+            len(frames), vertices.shape[0], joints.shape[0],
+            tracks[0]["joints"].shape[0], detection["boxes"].shape[0],
+        )
+        sample = cv2.imread(str(frames[0]), cv2.IMREAD_COLOR)
+        if sample is None:
+            return fail(f"cannot decode {frames[0]}")
+        height, width = sample.shape[:2]
+        size = (width, height)
         intrinsics = _ego_intrinsics(viz, frames[0].parent, size)
 
         import matplotlib
@@ -118,9 +147,11 @@ def main(argv: list[str] | None = None) -> int:
         out_path = viz / "viewer.mp4"
         writer = None
         for t in range(1, total + 1, max(1, args.video_stride)):
-            left = _ego_panel(cv2, frames[t - 1], vertices[t - 1], intrinsics,
-                              hand_valid[t - 1], faces,
-                              target_total=panel_h + HEADER_HEIGHT)
+            left = _ego_panel(
+                cv2, frames[t - 1], vertices[t - 1], joints[t - 1], intrinsics,
+                hand_valid[t - 1], faces, boxes=detection["boxes"][t - 1],
+                box_nudge=box_nudge, target_total=panel_h + HEADER_HEIGHT,
+            )
             figure = plt.figure(figsize=(panel_w / 100, panel_h / 100), dpi=100,
                                 facecolor=world.BACKGROUND)
             axes = figure.add_subplot(111, projection="3d", facecolor=world.BACKGROUND)
