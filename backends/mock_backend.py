@@ -282,6 +282,12 @@ def build_parser() -> argparse.ArgumentParser:
     hawor.add_argument("--window", type=int, default=16)
     hawor.add_argument("--overlap", type=int, default=8)
     hawor.add_argument("--frames", default=None)
+    # CLI parity with the real HaWoR runner; synthetic hands do not consume these.
+    hawor.add_argument("--focal", type=float, default=None)
+    hawor.add_argument("--camera-windows", default=None)
+    hawor.add_argument("--precision", default=None)
+    hawor.add_argument("--crop-size", type=int, default=None)
+    hawor.add_argument("--box-pad", type=float, default=None)
     add_shard_arguments(hawor)
     add_backend_args(hawor)
     hawor.set_defaults(func=command_hawor)

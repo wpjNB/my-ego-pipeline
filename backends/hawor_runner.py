@@ -46,6 +46,7 @@ the checkpoint and a GPU is the HaWoR call sequence itself.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -501,28 +502,56 @@ def _patch_crop_size(crop_size: int) -> None:
     TrackDatasetEval.__init__ = init_with_crop_size  # type: ignore[method-assign]
 
 
-def invalidate_stale_hand_cache(seq_folder: Path, focal: float | None) -> None:
-    """Drop HaWoR's cached hand parameters when the focal length changed.
-
-    ``hawor_motion_estimation`` short-circuits to
-    ``tracks_<start>_<end>/frame_chunks_all.npy`` whenever that file exists, and
-    it records the focal it used in ``est_focal.txt``. Re-running with a
-    *different* focal (or with one after a default-focal run) would therefore
-    silently reuse hand parameters reconstructed at the wrong depth - which is
-    exactly the 2.2x-too-deep HOT3D run. Removing the cache is loud, not silent.
-    """
+def invalidate_stale_hand_cache(
+    seq_folder: Path,
+    focal: float | None,
+    box_pad: float = 1.0,
+    boxes_fingerprint: str | None = None,
+) -> None:
+    """Drop HaWoR caches when focal, box padding, or tracked boxes change."""
     if focal is None:
         return
     marker = seq_folder / "est_focal.txt"
-    previous: float | None = None
+    marker_state: dict[str, object] = {"focal": float(focal), "box_pad": float(box_pad)}
+    if boxes_fingerprint is not None:
+        marker_state["boxes"] = str(boxes_fingerprint)
+
+    previous_state = None
+    force_invalidate = False
     if marker.is_file():
+        raw = marker.read_text()
         try:
-            previous = float(marker.read_text().strip())
-        except ValueError:
-            previous = None
-    marker.write_text(str(float(focal)))
-    if previous is None or abs(previous - float(focal)) < 1e-6:
+            loaded = json.loads(raw)
+        except json.JSONDecodeError:
+            try:
+                previous = float(raw.strip())
+            except ValueError:
+                print(f"invalid HaWoR cache marker {marker}; clearing cached tracks", file=sys.stderr)
+                force_invalidate = True
+            else:
+                previous_state = {"focal": previous, "box_pad": 1.0}
+        else:
+            if isinstance(loaded, dict) and "focal" in loaded:
+                try:
+                    previous_state = {
+                        "focal": float(loaded["focal"]),
+                        "box_pad": float(loaded.get("box_pad", 1.0)),
+                    }
+                    if "boxes" in loaded:
+                        previous_state["boxes"] = str(loaded["boxes"])
+                except (TypeError, ValueError):
+                    print(f"invalid HaWoR cache marker {marker}; clearing cached tracks", file=sys.stderr)
+                    force_invalidate = True
+            elif isinstance(loaded, (int, float)):
+                previous_state = {"focal": float(loaded), "box_pad": 1.0}
+            else:
+                print(f"invalid HaWoR cache marker {marker}; clearing cached tracks", file=sys.stderr)
+                force_invalidate = True
+
+    marker.write_text(json.dumps(marker_state))
+    if not force_invalidate and (previous_state is None or previous_state == marker_state):
         return
+
     removed = 0
     for cache in sorted(seq_folder.glob("tracks_*")):
         if cache.is_dir():
@@ -530,8 +559,8 @@ def invalidate_stale_hand_cache(seq_folder: Path, focal: float | None) -> None:
             removed += 1
     if removed:
         print(
-            f"focal changed {previous} -> {focal}: dropped {removed} cached HaWoR "
-            "track(s) so the hands are not reconstructed at the old depth",
+            f"reconstruction inputs changed: dropped {removed} cached HaWoR track(s) "
+            f"(old={previous_state}, new={marker_state})",
             file=sys.stderr,
         )
 
@@ -628,17 +657,17 @@ def run_model(args: argparse.Namespace) -> dict[str, np.ndarray]:
     out_dir = Path(args.out_dir).resolve()
     seq_folder = out_dir.parent / "hawor_seq"
     seq_folder.mkdir(parents=True, exist_ok=True)
-    # Drop stale caches BEFORE writing this run's model_tracks.npy below: the
-    # invalidation removes whole tracks_<start>_<end> directories, and ours is
-    # one of them. Called after the save it would delete the tracking this run
-    # just wrote and hawor_motion_estimation would then find no input at all.
-    invalidate_stale_hand_cache(seq_folder, args.focal)
-
-    # 1. our tracking becomes HaWoR's model_tracks.npy
+    # 1. our tracking becomes HaWoR's model_tracks.npy. Fingerprint detections
+    # before writing this run's tracks, so changed boxes cannot reuse stale
+    # model parameters from an earlier input.
     detection = load_npz(args.detection, required=("boxes", "confidence", "valid"))
     boxes = np.asarray(detection["boxes"], dtype=np.float64)
     confidence = np.asarray(detection["confidence"], dtype=np.float64)
     valid = np.asarray(detection["valid"], dtype=bool)
+    boxes_fingerprint = hashlib.sha1(np.ascontiguousarray(boxes).tobytes()).hexdigest()[:16]
+    invalidate_stale_hand_cache(
+        seq_folder, args.focal, boxes_fingerprint=boxes_fingerprint
+    )
     model_boxes, tracks = hawor_tracks_from_detection(
         boxes=boxes, confidence=confidence, valid=valid
     )

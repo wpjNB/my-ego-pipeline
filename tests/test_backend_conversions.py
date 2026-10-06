@@ -590,18 +590,15 @@ def test_hawor_absolutizes_paths_before_chdir(tmp_path: Path, monkeypatch: pytes
     assert True
 
 
-def test_resolve_focal_prefers_real_intrinsics_over_the_600px_default(
+def test_resolve_focal_prefers_input_camera_then_vggt_without_reading_gt(
     tmp_path: Path,
 ) -> None:
-    """HaWoR's silent 600 px default is what put hands 2.2x too deep on HOT3D."""
-    import numpy as np
-
     from ego3d_action.io.artefacts import ClipLayout
 
     runner = load_script("run_hand_mod_focal", "scripts/run_hand.py")
     layout = ClipLayout(data_root=tmp_path, clip="clip")
     layout.ensure_dirs()
-    (layout.metadata_path).write_text('{"width": 512, "height": 512}', encoding="utf-8")
+    layout.metadata_path.write_text('{"width": 512, "height": 512}', encoding="utf-8")
 
     class _Config:
         def __init__(self, values: dict[str, object]) -> None:
@@ -610,35 +607,72 @@ def test_resolve_focal_prefers_real_intrinsics_over_the_600px_default(
         def get(self, key: str, default: object = None) -> object:
             return self.values.get(key, default)
 
-    # 1. nothing available -> the caller must warn rather than guess
+    # Reference labels are evaluation-only and cannot resolve prediction focal.
+    gt_intrinsics = np.broadcast_to(
+        np.array([[221.14, 0.0, 255.8], [0.0, 221.14, 255.8], [0.0, 0.0, 1.0]]),
+        (3, 3, 3),
+    ).copy()
+    np.savez(layout.trajectory_dir / "ground_truth.npz", camera_K=gt_intrinsics)
     focal, source = runner.resolve_focal(layout, _Config({}))
     assert focal is None and source == "unavailable"
 
-    # 2. a reference trajectory answers when the camera stage has not run yet
-    intrinsics = np.broadcast_to(
-        np.array([[221.14, 0.0, 255.8], [0.0, 221.14, 255.8], [0.0, 0.0, 1.0]]), (3, 3, 3)
-    ).copy()
-    np.savez(layout.trajectory_dir / "ground_truth.npz", camera_K=intrinsics)
+    # With no source-frame calibration, the per-element median VGGT K is used.
+    for start, focal_px in ((0, 110.57), (4, 400.0)):
+        np.savez(
+            layout.window_path(start, start + 4),
+            intrinsics=np.broadcast_to(
+                np.array([[focal_px, 0.0, 127.9], [0.0, focal_px, 127.9], [0.0, 0.0, 1.0]]),
+                (4, 3, 3),
+            ).copy(),
+            depth=np.zeros((4, 256, 256), dtype=np.float32),
+        )
+    median_focal = (110.57 + 400.0) / 2 * 512 / 256
     focal, source = runner.resolve_focal(layout, _Config({}))
-    assert abs(focal - 221.14) < 1e-6 and source == "reference camera_K"
+    assert abs(focal - median_focal) < 0.05, (focal, median_focal)
+    overlay_K = runner._camera_intrinsics(layout)
+    assert abs(overlay_K[0, 0] - median_focal) < 0.05, overlay_K
 
-    # 3. Phase 3's windows win, rescaled from the depth grid to the frame size
-    np.savez(
-        layout.window_path(0, 4),
-        intrinsics=np.broadcast_to(
-            np.array([[110.57, 0.0, 127.9], [0.0, 110.57, 127.9], [0.0, 0.0, 1.0]]), (4, 3, 3)
-        ).copy(),
-        depth=np.zeros((4, 256, 256), dtype=np.float32),
+    # An undistorted input-frame K drives both hand focal and overlay projection.
+    image_camera = {
+        "model": "pinhole",
+        "undistorted": True,
+        "width": 512,
+        "height": 512,
+        "intrinsics": [[300.0, 0.0, 256.0], [0.0, 300.0, 256.0], [0.0, 0.0, 1.0]],
+    }
+    import json
+
+    layout.metadata_path.write_text(
+        json.dumps({"width": 512, "height": 512, "image_camera": image_camera}),
+        encoding="utf-8",
     )
     focal, source = runner.resolve_focal(layout, _Config({}))
-    assert abs(focal - 221.14) < 0.05 and source == "Phase 3 camera windows"
+    assert focal == 300.0 and source == "input frame camera calibration"
+    overlay_K = runner._camera_intrinsics(layout)
+    assert np.allclose(overlay_K, image_camera["intrinsics"])
 
-    # 4. an explicit config value wins over everything
-    focal, source = runner.resolve_focal(layout, _Config({"hand.focal": 300.0}))
-    assert focal == 300.0 and source == "config hand.focal"
+    viewer = load_script("render_viewer_mod_calibration", "scripts/render_viewer.py")
+    viewer_K = viewer._ego_intrinsics(
+        layout.visualization_dir, layout.frames_dir, (512, 512)
+    )
+    assert np.allclose(viewer_K, image_camera["intrinsics"])
+
+    from ego3d_action.camera.depth import input_frame_intrinsics
+
+    scaled = input_frame_intrinsics({"image_camera": image_camera}, (1024, 768))
+    assert np.allclose(
+        scaled,
+        [[600.0, 0.0, 512.0], [0.0, 450.0, 384.0], [0.0, 0.0, 1.0]],
+    )
+
+    # Explicit config remains the highest-priority override.
+    focal, source = runner.resolve_focal(layout, _Config({"hand.focal": 240.0}))
+    assert focal == 240.0 and source == "config hand.focal"
 
 
 def test_hawor_drops_cached_tracks_when_the_focal_changes(tmp_path: Path) -> None:
+    import json
+
     """A cached track computed at the default 600 px must not survive a real focal."""
     runner = load_script("hawor_runner_mod11", "backends/hawor_runner.py")
     seq = tmp_path / "seq"
@@ -646,7 +680,7 @@ def test_hawor_drops_cached_tracks_when_the_focal_changes(tmp_path: Path) -> Non
     (seq / "tracks_0_450" / "frame_chunks_all.npy").write_bytes(b"stale")
 
     runner.invalidate_stale_hand_cache(seq, 221.14)
-    assert (seq / "est_focal.txt").read_text() == "221.14"
+    assert json.loads((seq / "est_focal.txt").read_text())["focal"] == 221.14
     assert (seq / "tracks_0_450").is_dir()  # nothing to compare against -> keep
 
     runner.invalidate_stale_hand_cache(seq, 600.0)

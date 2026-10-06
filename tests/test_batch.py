@@ -348,7 +348,7 @@ def test_unit_command_shape() -> None:
     assert "--shard" in command and "1/2" in command
     assert command[0] == "python"
 
-    assembly = UnitSpec(clip="c1", stage="hand", selection=WindowSelection(), num_windows=29)
+    assembly = UnitSpec(clip="c1", stage="hand", selection=WindowSelection(), num_windows=29, mode="blend-only")
     blend = unit_command(assembly, config_path="cfg.yaml", data_root="data", extra=[])
     assert "--blend-only" in blend and "--skip-existing" in blend
 

@@ -1,13 +1,12 @@
 # Implementation status
 
-Last modified: 2026-10-06 18:48 (+08:00)
+Last modified: 2026-10-06 19:10 (+08:00)
 
-Test suite: **440 passed**, 1 skipped in 90.35 s on the CPU-only interpreter
-(`conda run -n ego3d_base python -m pytest -q`). 119 of those are newer than
-the M0 suite: the sharding/provenance/executor/batch modules, the sharded E2E
-comparison, and the HaWoR focal-resolution + cache-invalidation tests.
+Test suite: **404 passed**, 15 skipped in 80.62 s on aius1 in `ego3d_base`.
+The skips require a visible GPU, licensed MANO assets, or the bundled LeRobot
+sample, which are not present in this CPU checkout.
 
-HaWoR now runs after Phase 4 stitches the VGGT camera windows. Batch provenance hashes those camera inputs, so a changed camera invalidates stale hand output. WiLoR EGO previews can apply a configurable 2D box nudge for display only; saved metric arrays remain raw.
+HaWoR now runs after Phase 4 stitches the VGGT camera windows. Batch provenance hashes those camera inputs, so a changed camera invalidates stale hand output. Hand focal priority is explicit hand.focal, then validated undistorted input image_camera metadata, then canonical VGGT median; EGO projection uses that same image K, and prediction stages never read GT camera labels. On P0002_clip001971, the calibrated 608.54 px focal (versus 623.47 px from VGGT) reduced WiLoR median wrist reprojection errors from 84/28 px to 70/19 px; 3D wrist errors stayed near 49/36 mm, leaving model root/pose estimates as the main residual. WiLoR EGO previews can apply a configurable 2D box nudge for display only; saved metric arrays remain raw. Sharded plans tag hand joins as blend-only and camera joins as reuse, so commands and provenance distinguish them from full model runs.
 
 The `-vsync` wart is gone: `io/video.py` probes ffmpeg and picks
 `-fps_mode passthrough` (5.1+) over `-vsync 0`, so any ffmpeg works.

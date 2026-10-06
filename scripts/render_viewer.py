@@ -54,17 +54,19 @@ HEADER_HEIGHT = 26
 
 
 def _ego_intrinsics(viz_dir: Path, frames_dir: Path, size: tuple[int, int]):
-    """The overlay intrinsics, same rule as run_hand (first camera window)."""
-    from ego3d_action.camera.depth import scale_intrinsics
+    """Use the decoded RGB frame's undistorted K, then the VGGT median."""
+    from ego3d_action.camera.depth import canonical_intrinsics, input_frame_intrinsics
 
-    window = sorted(viz_dir.parent.glob("camera/windows/*.npz"))[0]
-    data = load_npz(window, required=("intrinsics", "depth"))
-    return scale_intrinsics(
-        np.asarray(data["intrinsics"])[0],
-        source_size=(int(data["depth"].shape[2]), int(data["depth"].shape[1])),
-        target_size=size,
-    )
+    metadata = load_json(frames_dir.parent / "metadata.json")
+    K = input_frame_intrinsics(metadata, size)
+    if K is not None:
+        return K
+    K = canonical_intrinsics(viz_dir.parent / "camera" / "windows", size)
+    if K is not None:
+        return K
+    from ego3d_action.testing.synthetic import make_intrinsics
 
+    return make_intrinsics(*size)
 
 def _ego_panel(
     cv2, frame_path: Path, vertices, joints, intrinsics, valid, faces, *,

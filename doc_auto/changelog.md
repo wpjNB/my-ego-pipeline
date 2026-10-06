@@ -1,5 +1,21 @@
 # Changelog
 
+
+## 2026-10-06 19:10 (+08:00) - hand inference and preview share the input camera
+
+The HOT3D-Clips importer records its already-undistorted pinhole camera in
+`metadata.json:image_camera`. Hand focal now resolves as explicit config,
+validated `image_camera`, then the canonical VGGT median; preview projection
+uses that same K. Prediction stages never read `ground_truth.npz` camera labels.
+On P0002_clip001971, WiLoR's median wrist reprojection errors fell from 84/28 px
+to 70/19 px after using the calibrated 608.54 px focal instead of VGGT's
+623.47 px. The 3D wrist medians stayed around 49/36 mm, so the remaining offset
+comes mainly from model root/pose estimates. The 0.5 box nudge remains a
+labeled, preview-only correction and does not alter metric arrays. Sharded
+hand/camera assembly units now record their mode explicitly, preserving correct
+commands and provenance after the stage-order change. Full suite on the clean
+PR branch: 404 passed, 15 skipped (80.62 s).
+
 ## 2026-09-30 15:05 (+08:00) - combined EGO | WORLD viewer, after the Wuji reference
 
 Studied the reference ecosystem's own visualisation stack before building:
