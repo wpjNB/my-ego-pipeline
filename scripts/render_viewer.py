@@ -55,12 +55,13 @@ HEADER_HEIGHT = 26
 
 
 def _ego_intrinsics(viz_dir: Path, frames_dir: Path, size: tuple[int, int]):
-    """The overlay intrinsics: the clip's canonical estimate (median across
-    the Phase 3 windows) - the exact matrix run_hand.resolve_focal hands to
-    the reconstruction, never the reference calibration and never a single
-    (possibly outlier) window."""
-    from ego3d_action.camera.depth import canonical_intrinsics
+    """Use the source frame's undistorted K, then fall back to VGGT's median."""
+    from ego3d_action.camera.depth import canonical_intrinsics, input_frame_intrinsics
 
+    metadata = load_json(frames_dir.parent / "metadata.json")
+    K = input_frame_intrinsics(metadata, size)
+    if K is not None:
+        return K
     K = canonical_intrinsics(viz_dir.parent / "camera" / "windows", size)
     if K is not None:
         return K

@@ -650,7 +650,8 @@ def test_resolve_focal_prefers_real_intrinsics_over_the_600px_default(
     focal, source = runner.resolve_focal(layout, _Config({}))
     assert abs(focal - 221.14) < 0.05 and source == "Phase 3 camera windows (canonical median)"
 
-    # 3c. an outlier second window must not move either the stage focal or the
+    # 3c. With no input-image calibration, an outlier window must not move
+    #     the canonical median used by inference or preview projection.
     #     overlay K: both resolve the per-element MEDIAN across windows, so
     #     the reconstruction and the render always share one camera.
     np.savez(
@@ -665,6 +666,41 @@ def test_resolve_focal_prefers_real_intrinsics_over_the_600px_default(
     assert abs(focal - median_focal) < 0.05, (focal, median_focal)
     overlay_K = runner._camera_intrinsics(layout)
     assert abs(overlay_K[0, 0] - median_focal) < 0.05, overlay_K
+
+    # 3d. A known undistorted input-frame camera controls overlay projection,
+    #     while the model focal remains the Phase-3 estimate (GT labels stay
+    #     out of the prediction path).
+    image_camera = {
+        "model": "pinhole",
+        "undistorted": True,
+        "width": 512,
+        "height": 512,
+        "intrinsics": [[300.0, 0.0, 256.0], [0.0, 300.0, 256.0], [0.0, 0.0, 1.0]],
+    }
+    import json
+
+    layout.metadata_path.write_text(
+        json.dumps({"width": 512, "height": 512, "image_camera": image_camera}),
+        encoding="utf-8",
+    )
+    overlay_K = runner._camera_intrinsics(layout)
+    assert np.allclose(overlay_K, image_camera["intrinsics"])
+    focal, source = runner.resolve_focal(layout, _Config({}))
+    assert abs(focal - median_focal) < 0.05 and source.startswith("Phase 3")
+
+    viewer = load_script("render_viewer_mod_calibration", "scripts/render_viewer.py")
+    viewer_K = viewer._ego_intrinsics(
+        layout.visualization_dir, layout.frames_dir, (512, 512)
+    )
+    assert np.allclose(viewer_K, image_camera["intrinsics"])
+
+    from ego3d_action.camera.depth import input_frame_intrinsics
+
+    scaled = input_frame_intrinsics({"image_camera": image_camera}, (1024, 768))
+    assert np.allclose(
+        scaled,
+        [[600.0, 0.0, 512.0], [0.0, 450.0, 384.0], [0.0, 0.0, 1.0]],
+    )
 
     # 4. an explicit config value wins over everything
     focal, source = runner.resolve_focal(layout, _Config({"hand.focal": 300.0}))

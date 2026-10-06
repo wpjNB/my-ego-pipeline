@@ -101,6 +101,43 @@ def scale_intrinsics(intrinsics: Array, *, source_size: tuple[int, int], target_
     return np.einsum("ij,...jk->...ik", scale, k)
 
 
+def input_frame_intrinsics(
+    metadata: dict[str, object], target_size: tuple[int, int]
+) -> Array | None:
+    """Return the calibrated K for the decoded RGB pixels, when recorded.
+
+    This is only the camera model for *drawing 3D predictions onto the source
+    frames*. Hand inference continues to use its configured / VGGT-estimated
+    focal. ``None`` means the clip has no explicit image calibration and the
+    caller should fall back to the canonical VGGT estimate.
+    """
+    camera = metadata.get("image_camera")
+    if camera is None:
+        return None
+    if not isinstance(camera, dict):
+        raise StageIOError("clip metadata image_camera must be an object")
+    if camera.get("model") != "pinhole" or camera.get("undistorted") is not True:
+        raise StageIOError(
+            "preview projection requires image_camera.model='pinhole' and undistorted=true"
+        )
+    try:
+        source_size = (int(camera["width"]), int(camera["height"]))
+        intrinsics = np.asarray(camera["intrinsics"], dtype=np.float64)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise StageIOError(f"invalid image_camera calibration in clip metadata: {exc}") from exc
+    if intrinsics.shape != (3, 3):
+        raise StageIOError(f"image_camera.intrinsics must be [3, 3], got {intrinsics.shape}")
+    if (
+        not np.isfinite(intrinsics).all()
+        or intrinsics[0, 0] <= 0.0
+        or intrinsics[1, 1] <= 0.0
+    ):
+        raise StageIOError("image_camera.intrinsics must be finite with positive focal lengths")
+    return scale_intrinsics(
+        intrinsics, source_size=source_size, target_size=target_size
+    )
+
+
 def depth_to_world_points(
     depth: Array,
     intrinsics: Array,

@@ -231,27 +231,27 @@ def _mano_faces(context) -> list[np.ndarray]:
 
 
 def _camera_intrinsics(layout) -> np.ndarray:
-    """Intrinsics for the debug overlay, at the RGB frame resolution.
+    """Intrinsics for projecting camera-space hands into the decoded RGB frame.
 
-    Estimation only (Phase 3's windows), never the reference ``camera_K``:
-    this overlay renders the pipeline's own output and must use the same
-    intrinsics the stage used, or the render would silently flatter the
-    prediction with the evaluation's calibration. Falls back to the
-    synthetic default for CPU-only clips.
+    Prefer the frame's explicitly recorded, undistorted pinhole calibration:
+    it defines the pixel grid the video actually uses. This calibration is a
+    camera input only; it is not read from ``ground_truth.npz``. Hand inference
+    continues to resolve its focal independently from config / Phase 3. When a
+    clip has no image calibration, use the canonical VGGT window estimate.
     """
-    from ego3d_action.camera.depth import scale_intrinsics
-    from ego3d_action.io.serialization import load_npz
+    from ego3d_action.camera.depth import canonical_intrinsics, input_frame_intrinsics
+    from ego3d_action.testing.synthetic import make_intrinsics
 
     metadata = clip_metadata(layout)
     width = int(metadata.get("width", 320))
     height = int(metadata.get("height", 240))
-    from ego3d_action.camera.depth import canonical_intrinsics
-
-    K = canonical_intrinsics(layout.camera_windows_dir, (width, height))
+    frame_size = (width, height)
+    K = input_frame_intrinsics(metadata, frame_size)
     if K is not None:
         return K
-    from ego3d_action.testing.synthetic import make_intrinsics
-
+    K = canonical_intrinsics(layout.camera_windows_dir, frame_size)
+    if K is not None:
+        return K
     return make_intrinsics(width, height)
 
 

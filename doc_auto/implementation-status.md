@@ -1,6 +1,6 @@
 # Implementation status
 
-Last modified: 2026-10-06 16:49 (+08:00)
+Last modified: 2026-10-06 18:11 (+08:00)
 
 Test suite: **440 passed**, 1 skipped in ~86 s on a CPU-only interpreter
 (`conda run -n ego3d_base python -m pytest -q`). 119 of those are newer than
@@ -9,7 +9,7 @@ comparison, and the HaWoR focal-resolution + cache-invalidation tests. The
 newest additions are the post-processing stages P2 (`tests/test_gap_fill.py`)
 and P3 (`tests/test_ukf_smooth.py`).
 
-HaWoR now runs after Phase 4 stitches the VGGT camera windows. Batch provenance hashes those camera inputs, so a changed camera invalidates stale hand output. WiLoR EGO renders apply a configurable 2D box nudge for display only; metric arrays remain raw.
+HaWoR now runs after Phase 4 stitches the VGGT camera windows. Batch provenance hashes those camera inputs, so a changed camera invalidates stale hand output. EGO previews use recorded undistorted input-frame intrinsics for pixel projection when available, falling back to the canonical VGGT median. This does not change hand inference or metric arrays. WiLoR previews may additionally apply the configurable display-only box nudge.
 
 The `-vsync` wart is gone: `io/video.py` probes ffmpeg and picks
 `-fps_mode passthrough` (5.1+) over `-vsync 0`, so any ffmpeg works.

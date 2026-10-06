@@ -1,6 +1,6 @@
 # Architecture
 
-Last modified: 2026-10-06 16:49 (+08:00)
+Last modified: 2026-10-06 18:11 (+08:00)
 
 ## Dataset bridge (LeRobot v3 / HOT3D)
 
@@ -92,9 +92,12 @@ a continuous World-0 camera path for its infiller; each raw VGGT window has its
 own local world gauge. The single-clip pipeline, batch planner and viewer
 pipeline all follow this order.
 
-WiLoR EGO overlays apply the configured half-step toward the tracked box center
-for display only. The corrected projection is used for the mesh and skeleton
-together; camera-space and world-space prediction arrays stay unchanged.
+EGO previews project camera-space hands with the input-frame calibration in
+`metadata.json:image_camera` when the importer records an already-undistorted
+pinhole camera. That K maps 3D points to the decoded RGB pixel grid; it is not
+the focal used to infer hand depth. Legacy clips without frame calibration fall
+back to the canonical Phase-3 VGGT estimate. The optional WiLoR box nudge stays
+display-only and never changes camera-space or world-space prediction arrays.
 
 | Phase | Module | Artefact | Notes |
 | --- | --- | --- | --- |

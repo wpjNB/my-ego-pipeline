@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-10-06 18:11 (+08:00) - render with the input-frame camera calibration
+
+The P0002 official frames were already undistorted to a pinhole camera with
+`f=608.54 px`, while the VGGT estimate used by the HaWoR preview was
+`f=623.47 px` (+2.45%). The preview had projected predictions with the model's
+estimated K instead of the K that maps camera coordinates into the actual RGB
+pixels. `import_bop_hot3d.py` now records the undistorted source-frame camera
+in `metadata.json:image_camera`; HaWoR, WiLoR and the combined viewer use it for
+projection only. Hand inference still resolves focal from config / VGGT and
+never reads hand-reference labels.
+
+Measured on P0002_clip001971, changing only the preview projection reduced the
+all-valid wrist reprojection median from 85.2 to 71.6 px (left) and 52.2 to
+38.6 px (right). In frames 0-40 it fell from 84.6 to 69.9 px (left) and 52.8
+to 36.9 px (right). The all-joint median changed little (67.1 px left,
+23.9 px right with calibrated projection), so this fixes the camera-to-image
+projection mismatch but does not remove HaWoR's remaining pose error. A
+separate isolated HaWoR rerun at 608.54 px worsened 3D wrist medians versus
+623.47 px, so inference focal remains unchanged.
+
+Regression coverage checks calibrated render K, resolution scaling, the viewer
+path, and unchanged VGGT focal selection. On the same opening frames, the
+calibrated WiLoR preview (0.5 box nudge, display only) measures 31.3/3.9 px
+median wrist error and 42.3/28.4 px median all-joint error for left/right;
+HaWoR's residual is higher on the lower/left hand. HaWoR `box_pad=2.0` was much
+worse than 1.5 on this clip, so 1.5 stays. Focused checks: 3 passed. Full
+suite: 440 passed, 1 skipped in 85.53 s; the skip requires a GPU-visible run.
+
+
 ## 2026-10-03 14:26 (+08:00) - vectorized depth correspondence assembly
 
 Phase 4 no longer builds Python dictionaries keyed by every valid
