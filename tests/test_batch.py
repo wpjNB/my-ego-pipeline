@@ -29,6 +29,7 @@ from ego3d_action.runtime.batch import (
     load_manifest,
     num_windows_for,
     stage_sequence,
+    input_hashes_for,
     unit_argument_signature,
     unit_command,
 )
@@ -251,6 +252,47 @@ def test_stage_sequence_respects_from_stage() -> None:
     assert "preprocess" not in stage_sequence(clip)
     with pytest.raises(ValueError):
         ClipSpec(clip="c1", from_stage="nope")
+
+
+def test_camera_stitch_precedes_hawor_in_batch_plan() -> None:
+    order = stage_sequence(ClipSpec(clip="c1"))
+    assert order.index("camera") < order.index("stitch") < order.index("hand")
+    assert order.index("hand") < order.index("fusion")
+
+
+def test_hand_provenance_tracks_camera_inputs(tmp_path: Path) -> None:
+    clip_root = tmp_path / "c1"
+    (clip_root / "camera" / "windows").mkdir(parents=True)
+    (clip_root / "detection").mkdir()
+    (clip_root / "camera" / "windows" / "000000_000007.npz").write_bytes(b"camera-window")
+    (clip_root / "camera" / "stitched_camera.npz").write_bytes(b"stitched-camera")
+    (clip_root / "detection" / "detection.npz").write_bytes(b"detections")
+    (clip_root / "metadata.json").write_text('{"num_frames": 8}', encoding="utf-8")
+    unit = UnitSpec(clip="c1", stage="hand", selection=WindowSelection())
+    before = input_hashes_for(unit, layout_root=tmp_path)
+    assert {"metadata.json", "detection.npz", "000000_000007.npz", "stitched_camera.npz"} <= set(before)
+
+    (clip_root / "camera" / "stitched_camera.npz").write_bytes(b"new-camera-path")
+    after = input_hashes_for(unit, layout_root=tmp_path)
+    assert before["stitched_camera.npz"] != after["stitched_camera.npz"]
+
+
+def test_hand_blend_provenance_tracks_hand_windows(tmp_path: Path) -> None:
+    clip_root = tmp_path / "c1"
+    (clip_root / "hand" / "windows").mkdir(parents=True)
+    (clip_root / "detection").mkdir()
+    (clip_root / "hand" / "windows" / "000000_000015.npz").write_bytes(b"hand-window")
+    (clip_root / "detection" / "detection.npz").write_bytes(b"detections")
+    (clip_root / "metadata.json").write_text('{"num_frames": 16}', encoding="utf-8")
+    unit = UnitSpec(
+        clip="c1",
+        stage="hand",
+        selection=WindowSelection(),
+        mode="blend-only",
+    )
+    hashes = input_hashes_for(unit, layout_root=tmp_path)
+    assert "000000_000015.npz" in hashes
+    assert "stitched_camera.npz" not in hashes
 
 
 def test_build_plan_emits_one_unit_per_shard_plus_an_assembly() -> None:

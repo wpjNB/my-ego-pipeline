@@ -83,18 +83,18 @@ else
     "$PY" scripts/run_camera.py --config "$CONFIG" --clip "$CLIP" --device "$DEVICE"
 fi
 
-# ---- phase 2: hand reconstruction (uses the camera estimate above) ---------
+# ---- phase 4: stitch camera windows before HaWoR. Each raw VGGT window has
+# its own world gauge; HaWoR's infiller needs one continuous World-0 trajectory.
+stage stitch "$CLIP_DIR/camera/stitched_camera.npz" "$PY" scripts/run_stitch.py --config "$CONFIG" --clip "$CLIP"
+
+# ---- phase 2: hand reconstruction (uses the camera estimate and stitched
+# trajectory above) ----------------------------------------------------------
 case "$HAND" in
     wilor) HAND_SCRIPT=scripts/run_hand_wilor.py ;;
     hawor) HAND_SCRIPT=scripts/run_hand.py ;;
     *) echo "HAND must be wilor or hawor (got $HAND)" >&2; exit 1 ;;
 esac
-stage "hand ($HAND)" "$CLIP_DIR/hand/hand_camera.npz" \
-    "$PY" "$HAND_SCRIPT" --config "$CONFIG" --clip "$CLIP" --device "$DEVICE"
-
-# ---- phase 4: window stitching ---------------------------------------------
-stage stitch "$CLIP_DIR/camera/stitched_camera.npz" \
-    "$PY" scripts/run_stitch.py --config "$CONFIG" --clip "$CLIP"
+stage "hand ($HAND)" "$CLIP_DIR/hand/hand_camera.npz" "$PY" "$HAND_SCRIPT" --config "$CONFIG" --clip "$CLIP" --device "$DEVICE"
 
 # ---- phase 5: hand + camera -> world ---------------------------------------
 stage fusion "$CLIP_DIR/trajectory/trajectory_raw.npz" \

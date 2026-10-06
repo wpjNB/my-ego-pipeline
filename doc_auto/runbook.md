@@ -1,6 +1,6 @@
 # Runbook: how to run this project
 
-Last modified: 2026-09-24 22:30 (+08:00)
+Last modified: 2026-10-06 16:07 (+08:00)
 
 Two paths. Path A needs no weights and no GPU; Path B is the real pipeline.
 Start every session with the audit:
@@ -65,9 +65,9 @@ Per-clip command sequence (equivalent to the demo):
 ```bash
 python scripts/run_preprocess.py    --config configs/mock.yaml --clip clip01 --data-root data/mock --video clip01.mp4
 python scripts/run_detection.py     --config configs/mock.yaml --clip clip01 --data-root data/mock
-python scripts/run_hand.py          --config configs/mock.yaml --clip clip01 --data-root data/mock
 python scripts/run_camera.py        --config configs/mock.yaml --clip clip01 --data-root data/mock
 python scripts/run_stitch.py        --config configs/mock.yaml --clip clip01 --data-root data/mock
+python scripts/run_hand.py          --config configs/mock.yaml --clip clip01 --data-root data/mock
 python scripts/run_fusion.py        --config configs/mock.yaml --clip clip01 --data-root data/mock
 python scripts/run_refine.py        --config configs/mock.yaml --clip clip01 --data-root data/mock
 python backends/mock_backend.py truth --out data/mock/clip01/trajectory/truth.npz --num-frames 300
@@ -112,17 +112,17 @@ $RUN scripts/run_detection.py --config $CFG --clip $CLIP
 #    -> detection/detection.npz (+ 01_detection.mp4)
 #    prints: coverage left=xx% right=xx%
 
-# 2 - HaWoR 16/8 (GPU env ego3d_hawor; ours tracking drives it)
-$RUN scripts/run_hand.py --config $CFG --clip $CLIP
-#    -> hand/hand_camera.npz, hand/windows/*.npz (+ 02_hawor.mp4)
-
-# 3 - VGGT-Omega windows (GPU env ego3d_vggt; one process for the whole clip)
+# 2 - VGGT-Omega windows (GPU env ego3d_vggt; one process for the whole clip)
 $RUN scripts/run_camera.py --config $CFG --clip $CLIP
 #    -> camera/windows/000000_000199.npz ...
 
-# 4 - depth-derived Sim(3) stitching + linear blending (CPU)
+# 3 - depth-derived Sim(3) camera stitching (CPU)
 $RUN scripts/run_stitch.py --config $CFG --clip $CLIP
 #    -> camera/stitched_camera.npz, stitched/sim3_transforms.npz
+
+# 4 - HaWoR 16/8 (GPU env ego3d_hawor; consumes the stitched camera path)
+$RUN scripts/run_hand.py --config $CFG --clip $CLIP
+#    -> hand/hand_camera.npz, hand/windows/*.npz (+ 02_hawor.mp4)
 #    prints per-pair: scale, rmse, inlier%, rotation
 
 # 5 - world fusion (CPU)

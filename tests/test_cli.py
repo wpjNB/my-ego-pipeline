@@ -109,6 +109,9 @@ def test_pipeline_dry_run_lists_every_stage(stitched_clip: Path) -> None:
     assert result.returncode == 0, result.stderr
     for stage in ("phase0-preprocess", "phase4-stitch", "phase6-refine"):
         assert stage in result.stdout
+    ordered = ("phase3-camera", "phase4-stitch", "phase2-hand", "phase5-fusion")
+    positions = [result.stdout.index(stage) for stage in ordered]
+    assert positions == sorted(positions)
     assert "environment:" in result.stdout
     assert "backend mode: real" in result.stdout
 
