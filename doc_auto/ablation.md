@@ -1,6 +1,6 @@
 # Ablation table
 
-Last modified: 2026-10-06 19:00 (+08:00)
+Last modified: 2026-10-06 19:15 (+08:00)
 
 ## Mock backend (CPU, 300 frames, deterministic - plumbing validation only)
 
@@ -408,3 +408,25 @@ camera-path choice up to floating-point noise. VGGT's world trajectory remains
 a separate issue; the official camera error for this clip is `162.1 mm`, which
 affects world-space accuracy. Diagnostic report:
 `data/hot3d/P0002_clip001971/trajectory/eval_mano_alignment.json`.
+
+## P0002 calibrated focal rerun: WiLoR and official score (2026-10-06)
+
+The undistorted source-frame calibration is `f=608.544 px`; VGGT estimated
+`623.473 px`. WiLoR was rerun with `hand.focal` resolved from
+`metadata.json:image_camera`, holding detections, crop rescale (`2.5`) and
+smoothing (one pass) fixed. The camera-space 3D wrist error stayed nearly
+unchanged, while projected wrist agreement improved on shared hand frames:
+
+| WiLoR focal | left wrist px | right wrist px | left wrist 3D | right wrist 3D |
+| --- | ---: | ---: | ---: | ---: |
+| VGGT estimate 623.473 px | 84.2 px | 28.0 px | 49.6 mm | 34.7 mm |
+| input K 608.544 px | 70.4 px | 19.0 px | 49.1 mm | 35.6 mm |
+
+With the display-only 0.5 detector-box nudge, opening frames 0-40 improve from
+31.3 to 23.2 px median wrist error on the lower/left hand; all-joint medians
+are 42.3 to 39.2 px. The saved hand arrays now use the input focal, and Phase
+5-7 were rerun. Official results changed from Action-MPJPE `120.93` to
+`115.8324 mm`, wrist `122.1` to `91.6857 mm`, depth `58.8` to `46.3373 mm`;
+the camera error remains `162.14 mm` because the VGGT camera trajectory was
+unchanged. The full report is
+`data/hot3d/P0002_clip001971/trajectory/eval_official.json`.
