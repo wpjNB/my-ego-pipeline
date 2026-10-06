@@ -1,6 +1,6 @@
 # Ablation table
 
-Last modified: 2026-10-01 22:35 (+08:00)
+Last modified: 2026-10-06 19:00 (+08:00)
 
 ## Mock backend (CPU, 300 frames, deterministic - plumbing validation only)
 
@@ -385,3 +385,26 @@ The 1.1 m error is expected and meaningless: the mock backend substitutes
 synthetic hands and a synthetic camera trajectory, so this run only proves that
 every stage, the artefact contract and the evaluation survive real-resolution,
 real-length, real-motion input.
+
+## HOT3D-Clip P0002: EGO overlay camera-path isolation (2026-10-06)
+
+To check whether the remaining HaWoR mesh offset came from VGGT camera poses,
+HaWoR was run twice on `P0002_clip001971` with the same frames, detections,
+focal (`623.473 px`), crop padding (`1.5`) and weights. The first run used
+`camera_source=vggt-stitched`; the control omitted camera windows and reported
+`camera_source=constant`.
+
+| Comparison | Result |
+| --- | --- |
+| valid mask | identical, 220 hand-frames |
+| maximum joint camera-space difference | `1.32e-7 m` |
+| maximum vertex camera-space difference | `1.79e-7 m` |
+| calibrated-K pixel-error median, left wrist / all joints | `71.6 / 67.1 px` in both runs |
+| calibrated-K pixel-error median, right wrist / all joints | `38.6 / 23.9 px` in both runs |
+
+For this clip and backend, the VGGT pose input does not cause the residual in
+the EGO hand overlay: HaWoR's camera-space prediction is invariant to the
+camera-path choice up to floating-point noise. VGGT's world trajectory remains
+a separate issue; the official camera error for this clip is `162.1 mm`, which
+affects world-space accuracy. Diagnostic report:
+`data/hot3d/P0002_clip001971/trajectory/eval_mano_alignment.json`.
