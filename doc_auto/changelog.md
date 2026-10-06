@@ -1,20 +1,18 @@
 # Changelog
 
 
-## 2026-10-06 19:10 (+08:00) - hand inference and preview share the input camera
+## 2026-10-06 21:47 (+08:00) - keep HOT3D hand inference RGB-only
 
-The HOT3D-Clips importer records its already-undistorted pinhole camera in
-`metadata.json:image_camera`. Hand focal now resolves as explicit config,
-validated `image_camera`, then the canonical VGGT median; preview projection
-uses that same K. Prediction stages never read `ground_truth.npz` camera labels.
-On P0002_clip001971, WiLoR's median wrist reprojection errors fell from 84/28 px
-to 70/19 px after using the calibrated 608.54 px focal instead of VGGT's
-623.47 px. The 3D wrist medians stayed around 49/36 mm, so the remaining offset
-comes mainly from model root/pose estimates. The 0.5 box nudge remains a
-labeled, preview-only correction and does not alter metric arrays. Sharded
-hand/camera assembly units now record their mode explicitly, preserving correct
-commands and provenance after the stage-order change. Full suite on the clean
-PR branch: 404 passed, 15 skipped (80.62 s).
+Hand focal and EGO preview K come from VGGT's RGB-derived camera windows
+(canonical per-element median), with explicit `hand.focal` retained as an
+experiment override. Importer `image_camera` metadata and `ground_truth.npz`
+camera labels are not consumed by prediction code. On P0002_clip001971 the
+VGGT focal was 623.47 px; the RGB-only WiLoR output measured wrist reprojection
+medians of 84/28 px. A separate 608.54 px calibrated-focal run reached 70/19 px,
+but is an oracle calibration ablation and is not reported as an RGB-only score.
+The 0.5 box nudge remains labeled and preview-only. Sharded hand/camera joins
+record their mode to preserve command and provenance correctness. Full suite on
+the clean PR branch: 404 passed, 15 skipped (79.48 s).
 
 ## 2026-09-30 15:05 (+08:00) - combined EGO | WORLD viewer, after the Wuji reference
 

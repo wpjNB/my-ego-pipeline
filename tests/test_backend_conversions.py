@@ -590,7 +590,7 @@ def test_hawor_absolutizes_paths_before_chdir(tmp_path: Path, monkeypatch: pytes
     assert True
 
 
-def test_resolve_focal_prefers_input_camera_then_vggt_without_reading_gt(
+def test_resolve_focal_uses_rgb_estimate_without_reading_camera_labels(
     tmp_path: Path,
 ) -> None:
     from ego3d_action.io.artefacts import ClipLayout
@@ -598,7 +598,6 @@ def test_resolve_focal_prefers_input_camera_then_vggt_without_reading_gt(
     runner = load_script("run_hand_mod_focal", "scripts/run_hand.py")
     layout = ClipLayout(data_root=tmp_path, clip="clip")
     layout.ensure_dirs()
-    layout.metadata_path.write_text('{"width": 512, "height": 512}', encoding="utf-8")
 
     class _Config:
         def __init__(self, values: dict[str, object]) -> None:
@@ -607,16 +606,31 @@ def test_resolve_focal_prefers_input_camera_then_vggt_without_reading_gt(
         def get(self, key: str, default: object = None) -> object:
             return self.values.get(key, default)
 
-    # Reference labels are evaluation-only and cannot resolve prediction focal.
+    # Neither reference camera labels nor importer calibration metadata are
+    # prediction inputs in the RGB-only evaluation protocol.
     gt_intrinsics = np.broadcast_to(
         np.array([[221.14, 0.0, 255.8], [0.0, 221.14, 255.8], [0.0, 0.0, 1.0]]),
         (3, 3, 3),
     ).copy()
     np.savez(layout.trajectory_dir / "ground_truth.npz", camera_K=gt_intrinsics)
+    image_camera = {
+        "model": "pinhole",
+        "undistorted": True,
+        "width": 512,
+        "height": 512,
+        "intrinsics": [[300.0, 0.0, 256.0], [0.0, 300.0, 256.0], [0.0, 0.0, 1.0]],
+    }
+    import json
+
+    layout.metadata_path.write_text(
+        json.dumps({"width": 512, "height": 512, "image_camera": image_camera}),
+        encoding="utf-8",
+    )
     focal, source = runner.resolve_focal(layout, _Config({}))
     assert focal is None and source == "unavailable"
 
-    # With no source-frame calibration, the per-element median VGGT K is used.
+    # The canonical per-element median of VGGT's RGB-derived window K is the
+    # inference and rendering camera when no explicit override is configured.
     for start, focal_px in ((0, 110.57), (4, 400.0)):
         np.savez(
             layout.window_path(start, start + 4),
@@ -632,40 +646,12 @@ def test_resolve_focal_prefers_input_camera_then_vggt_without_reading_gt(
     overlay_K = runner._camera_intrinsics(layout)
     assert abs(overlay_K[0, 0] - median_focal) < 0.05, overlay_K
 
-    # An undistorted input-frame K drives both hand focal and overlay projection.
-    image_camera = {
-        "model": "pinhole",
-        "undistorted": True,
-        "width": 512,
-        "height": 512,
-        "intrinsics": [[300.0, 0.0, 256.0], [0.0, 300.0, 256.0], [0.0, 0.0, 1.0]],
-    }
-    import json
-
-    layout.metadata_path.write_text(
-        json.dumps({"width": 512, "height": 512, "image_camera": image_camera}),
-        encoding="utf-8",
-    )
-    focal, source = runner.resolve_focal(layout, _Config({}))
-    assert focal == 300.0 and source == "input frame camera calibration"
-    overlay_K = runner._camera_intrinsics(layout)
-    assert np.allclose(overlay_K, image_camera["intrinsics"])
-
-    viewer = load_script("render_viewer_mod_calibration", "scripts/render_viewer.py")
+    viewer = load_script("render_viewer_mod_rgb_only", "scripts/render_viewer.py")
     viewer_K = viewer._ego_intrinsics(
         layout.visualization_dir, layout.frames_dir, (512, 512)
     )
-    assert np.allclose(viewer_K, image_camera["intrinsics"])
+    assert abs(viewer_K[0, 0] - median_focal) < 0.05, viewer_K
 
-    from ego3d_action.camera.depth import input_frame_intrinsics
-
-    scaled = input_frame_intrinsics({"image_camera": image_camera}, (1024, 768))
-    assert np.allclose(
-        scaled,
-        [[600.0, 0.0, 512.0], [0.0, 450.0, 384.0], [0.0, 0.0, 1.0]],
-    )
-
-    # Explicit config remains the highest-priority override.
     focal, source = runner.resolve_focal(layout, _Config({"hand.focal": 240.0}))
     assert focal == 240.0 and source == "config hand.focal"
 

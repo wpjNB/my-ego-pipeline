@@ -1,6 +1,6 @@
 # Runbook: how to run this project
 
-Last modified: 2026-10-06 19:10 (+08:00)
+Last modified: 2026-10-06 21:47 (+08:00)
 
 Two paths. Path A needs no weights and no GPU; Path B is the real pipeline.
 Start every session with the audit:
@@ -51,7 +51,7 @@ Interpretation rules: `01_detection.mp4` / `02_hawor.mp4` written with
 fingertips curl behind the palm - look at the wrist marker or the projected mesh
 instead.
 
-Hand focal resolution and EGO preview projection use the same validated, undistorted `metadata.json:image_camera` when available. Focal priority is `hand.focal` override -> input-frame calibration -> canonical VGGT median; legacy clips without image calibration use VGGT. Prediction stages never read ground-truth camera labels. WiLoR previews may apply the configured, labeled 2D box nudge to rendered pixels only; saved 3D arrays remain unchanged.
+Hand focal resolution and EGO preview projection use the same canonical median K from VGGT's RGB-derived camera windows. Focal priority is the explicit `hand.focal` experiment override, then VGGT; importer `image_camera` metadata is excluded from focal resolution and EGO projection; ground-truth labels are loaded only by explicit evaluation/comparison paths such as `render_viewer.py --gt`. WiLoR previews may apply the configured, labeled 2D box nudge to rendered pixels only; saved 3D arrays remain unchanged.
 
 What `make demo` prints on this machine (CPU, mock):
 
@@ -123,7 +123,7 @@ $RUN scripts/run_stitch.py --config $CFG --clip $CLIP
 #    -> camera/stitched_camera.npz, stitched/sim3_transforms.npz
 
 # 4 - HaWoR 16/8 (GPU env ego3d_hawor; consumes the stitched camera path)
-#    focal priority: hand.focal -> validated input image_camera -> VGGT canonical median
+#    focal priority: explicit hand.focal override -> VGGT RGB-derived canonical median
 $RUN scripts/run_hand.py --config $CFG --clip $CLIP
 #    -> hand/hand_camera.npz, hand/windows/*.npz (+ 02_hawor.mp4)
 #    prints per-pair: scale, rmse, inlier%, rotation

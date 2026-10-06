@@ -63,8 +63,8 @@ def main(argv: list[str] | None = None) -> int:
         focal, focal_source = resolve_focal(layout, context.config)
         if focal is None:
             print(
-                "WARNING: no focal length available (no image_camera calibration, no camera "
-                "windows, no hand.focal). HaWoR will fall back to its hard-coded "
+                "WARNING: no focal length available (no VGGT camera estimate, no hand.focal). "
+                "HaWoR will fall back to its hard-coded "
                 "600 px default, which mis-scales hand depth - do not read the "
                 "result as metric. Set --set hand.focal=<px> to fix it."
             )
@@ -231,25 +231,27 @@ def _mano_faces(context) -> list[np.ndarray]:
 
 
 def _camera_intrinsics(layout) -> np.ndarray:
-    """Intrinsics mapping predicted camera points onto the decoded RGB grid."""
-    from ego3d_action.camera.depth import canonical_intrinsics, input_frame_intrinsics
+    """Use VGGT-predicted intrinsics to project hands onto input RGB frames."""
+    from ego3d_action.camera.depth import canonical_intrinsics
     from ego3d_action.testing.synthetic import make_intrinsics
 
     metadata = clip_metadata(layout)
     width = int(metadata.get("width", 320))
     height = int(metadata.get("height", 240))
     size = (width, height)
-    K = input_frame_intrinsics(metadata, size)
-    if K is not None:
-        return K
     K = canonical_intrinsics(layout.camera_windows_dir, size)
     if K is not None:
         return K
     return make_intrinsics(width, height)
 
 def resolve_focal(layout, config) -> tuple[float | None, str]:
-    """Resolve hand inference focal from config, input calibration, or VGGT."""
-    from ego3d_action.camera.depth import canonical_intrinsics, input_frame_intrinsics
+    """Resolve prediction focal from an explicit override or VGGT estimates.
+
+    HOT3D camera/hand labels and importer calibration metadata are evaluation or
+    preprocessing data, not prediction inputs. Without an explicit experiment
+    override, use the canonical median of VGGT's RGB-derived camera windows.
+    """
+    from ego3d_action.camera.depth import canonical_intrinsics
 
     configured = config.get("hand.focal", None)
     if configured:
@@ -258,10 +260,6 @@ def resolve_focal(layout, config) -> tuple[float | None, str]:
     metadata = clip_metadata(layout)
     width = int(metadata.get("width", 320))
     height = int(metadata.get("height", 240))
-    K = input_frame_intrinsics(metadata, (width, height))
-    if K is not None and np.isfinite(K[0, 0]) and K[0, 0] > 0.0:
-        return float(K[0, 0]), "input frame camera calibration"
-
     K = canonical_intrinsics(layout.camera_windows_dir, (width, height))
     if K is not None and np.isfinite(K[0, 0]) and K[0, 0] > 0.0:
         return float(K[0, 0]), "Phase 3 camera windows (canonical median)"
