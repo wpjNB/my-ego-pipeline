@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-10-09 12:02 (+08:00) - re-anchor HOT3D MANO root rotations with the camera
+
+The LeRobot importer moved camera poses and wrist positions into World-0 before
+MANO forward kinematics, but left `mano_root_rot` in the original HOT3D world
+basis. The wrist therefore projected correctly while the fingers rotated around
+it in the wrong direction. The converter now left-multiplies each root rotation
+by the same anchor rotation; local finger rotations stay local.
+
+On sample_ep001 frame 175, corrected GT wrist positions are unchanged while the
+non-wrist joints move by a mean 17.5 cm (left) / 13.1 cm (right). The corrected
+GT re-import changes WiLoR Action-MPJPE from 199.34 to 91.74 mm and HaWoR from
+175.47 to 77.44 mm. Camera error remains 153.50 mm; the same frame's predicted
+camera differs from the reference by 137.9 mm and 4.66 degrees. The default `gt_vs_pred` view includes that drift; camera-space wrist medians
+remain 45.9/50.5 mm, so hand estimation also has residual error.
+Regression: `tests/test_hot3d_gt.py`. Full suite: 405 passed, 15 skipped in 80.39 s.
+
 
 ## 2026-10-06 21:47 (+08:00) - keep HOT3D hand inference RGB-only
 

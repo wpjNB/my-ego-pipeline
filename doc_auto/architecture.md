@@ -1,6 +1,6 @@
 # Architecture
 
-Last modified: 2026-10-06 21:47 (+08:00)
+Last modified: 2026-10-09 12:02 (+08:00)
 
 ## Dataset bridge (LeRobot v3 / HOT3D)
 
@@ -13,7 +13,7 @@ converts one episode into the project's trajectory contract:
 | `extrinsics_w2c` (16) | `camera_R_c2w` / `camera_t_c2w` (inverted; `p_cam = R p_world + t`) |
 | `intrinsics` (9) | `camera_K` |
 | `left/right_transl_world` (3) | `hand_xyz_world[t, h, 0, :]` (wrist) |
-| `left/right_orient_world` (9) | `mano_root_rot[t, h]` |
+| `left/right_orient_world` (9) | `mano_root_rot[t, h]` (re-anchored into World-0) |
 | `left/right_hand_pose` (135) | `mano_hand_pose[t, h]` (15 rotations) |
 | `observation.state` (61 per hand) | `mano_betas[t, h]` (layout inferred, recorded) |
 | `state_mask` & `*_kept` | `hand_valid[t, h]` |
@@ -23,6 +23,9 @@ Two decisions worth knowing:
 * the reference is re-anchored to ``World-0`` (`camera_pose.world_frame_alignment`)
   so it is directly comparable with a prediction; the original HOT3D frame is
   preserved in `hot3d_world_anchor_rotation/translation`;
+* MANO root orientations are transformed by the same anchor rotation before
+  forward kinematics; otherwise wrist positions remain correct but the fingers
+  rotate in the original HOT3D world basis;
 * joints 1..20 stay ``NaN`` because no MANO mesh model is available, and the
   evaluation masks **per joint**, so a wrist-only reference still yields a
   meaningful number plus an explicit `referenced joints: x %` line instead of a

@@ -1,10 +1,12 @@
 # Implementation status
 
-Last modified: 2026-10-06 21:47 (+08:00)
+Last modified: 2026-10-09 12:02 (+08:00)
 
-Test suite: **404 passed**, 15 skipped in 79.48 s on aius1 in `ego3d_base`.
+Test suite: **405 passed**, 15 skipped in 80.39 s on aius1 in `ego3d_base`.
 The skips require a visible GPU, licensed MANO assets, or the bundled LeRobot
 sample, which are not present in this CPU checkout.
+
+LeRobot HOT3D GT conversion now re-anchors MANO root rotations with the wrist and camera before FK; the prior converter left finger poses in the source world basis. At sample_ep001 frame 175, wrist locations stay fixed while mean non-wrist joints shift 17.5 cm (left) / 13.1 cm (right). After re-import, WiLoR/HaWoR Action-MPJPE is 91.74/77.44 mm; camera pose error remains 153.50 mm, so world-frame overlays still show camera drift. The default world-frame viewer includes this camera drift; the hand-camera wrist median still shows residual model error.
 
 HaWoR now runs after Phase 4 stitches the VGGT camera windows. Batch provenance hashes those camera inputs, so a changed camera invalidates stale hand output. Under the RGB-only evaluation protocol, hand focal priority is explicit hand.focal experiment override, then the canonical median VGGT K; EGO preview uses that same predicted K. Importer image_camera metadata and GT labels are not prediction inputs. On P0002_clip001971, the RGB-derived VGGT focal was 623.47 px and the valid prediction's wrist reprojection medians were 84/28 px; the 608.54 px calibration run reduced these to 70/19 px but is an oracle calibration ablation, not a valid RGB-only score. WiLoR EGO previews can apply a configurable 2D box nudge for display only; saved metric arrays remain raw. Sharded plans tag hand joins as blend-only and camera joins as reuse, so commands and provenance distinguish them from full model runs.
 

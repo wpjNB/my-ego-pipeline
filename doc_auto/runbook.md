@@ -1,6 +1,6 @@
 # Runbook: how to run this project
 
-Last modified: 2026-10-06 21:47 (+08:00)
+Last modified: 2026-10-09 12:02 (+08:00)
 
 Two paths. Path A needs no weights and no GPU; Path B is the real pipeline.
 Start every session with the audit:
@@ -44,6 +44,12 @@ Both the wrist marker and `--skeleton` go through
 now-deleted debug PNG where the hands floated over the bowl - it is not a
 pipeline bug, and the test `test_world_to_camera_is_the_inverse_of_the_stored_pose`
 exists to keep it that way.
+
+LeRobot HOT3D references also need MANO root orientations transformed by the
+same World-0 anchor as wrist positions and camera poses. Re-import
+`ground_truth.npz` after changing that converter. The default world-frame `gt_vs_pred.mp4` includes camera-trajectory error.
+Interpret large wrist deltas alongside the camera-pose error before attributing
+them to the hand model.
 
 Interpretation rules: `01_detection.mp4` / `02_hawor.mp4` written with
 `backends.mode: mock` show the deterministic stand-in, not a model; and a
