@@ -1,5 +1,19 @@
 # Changelog
 
+
+## 2026-10-09 13:30 (+08:00) - VGGT depth prior pilot for HaWoR (negative)
+
+The current HaWoR call already receives VGGT-derived focal and stitched camera
+poses, but its upstream inference API has no dense-depth argument. A wrapper
+pilot projected HaWoR MANO meshes through each VGGT window K, sampled VGGT depth
+on the front-most projected mesh, and adjusted per-frame root Z while preserving
+the wrist pixel. On P0001/P0002/P0003 the wrist 3D median worsened respectively
+from 14.8/22.9 to 54.4/47.2 mm, 28.6/13.3 to 161.7/311.1 mm, and 34.2/55.6 to
+182.6/171.2 mm (left/right). The depth map at GT wrist pixels had absolute
+median Z error 14.5/186.3/129.5 mm. This post-hoc adapter is not kept in the
+pipeline; a dense monocular depth map is not a dependable direct hand-root-Z
+measurement on these clips. Full experiment details are in `ablation.md`.
+
 ## 2026-10-09 12:02 (+08:00) - re-anchor HOT3D MANO root rotations with the camera
 
 The LeRobot importer moved camera poses and wrist positions into World-0 before
