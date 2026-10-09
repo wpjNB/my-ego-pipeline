@@ -46,6 +46,7 @@ the checkpoint and a GPU is the HaWoR call sequence itself.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -194,24 +195,61 @@ def write_camera_trajectory(
                 "(scripts/run_camera.py) or omit the flag to use a constant camera"
             )
         coverage = np.zeros(count, dtype=bool)
-        for path in candidates:
-            window = load_camera_window(path)
-            first, last = window.window.start, window.window.end
-            for frame in range(max(first, start_idx), min(last, end_idx)):
-                local = frame - first
-                slot = frame - start_idx
-                rotations[slot] = window.rotation_c2w[local]
-                translations[slot] = window.translation_c2w[local]
-                coverage[slot] = True
-        if not coverage.all():
-            missing = int((~coverage).sum())
+        # Prefer the *stitched* trajectory: each raw VGGT window is normalised
+        # to its own first frame, so adjacent windows disagree on shared frames
+        # (~4 deg / ~2 cm, measured on hot3d_ep000) and the naive per-frame
+        # assembly produced a pose stream that JUMPED at every window boundary -
+        # the infiller's temporal model then operated on discontinuous data.
+        # Phase 4 (run_stitch) aligns all windows into one World-0 frame; use it
+        # whenever it exists.
+        stitched_path = windows_dir.parent / "stitched_camera.npz"
+        if stitched_path.is_file():
+            from ego3d_action.camera.stitch import load_stitched_camera  # noqa: PLC0415
+
+            stitched = load_stitched_camera(stitched_path)
+            if stitched.num_frames < end_idx:
+                raise FileNotFoundError(
+                    f"{stitched_path} covers {stitched.num_frames} frames but the clip "
+                    f"needs {end_idx}; re-run scripts/run_stitch.py"
+                )
+            rotations[:] = stitched.rotation_c2w[start_idx:end_idx]
+            translations[:] = stitched.translation_c2w[start_idx:end_idx]
+            coverage[:] = np.asarray(stitched.valid, dtype=bool)[start_idx:end_idx]
+            if not coverage.all():
+                missing = int((~coverage).sum())
+                print(
+                    f"WARNING: the stitched camera marks {missing} of {count} frames "
+                    f"([{start_idx}, {end_idx})) invalid; those fall back to the "
+                    "identity camera.",
+                    file=sys.stderr,
+                )
+            source = "vggt-stitched"
+        else:
             print(
-                f"WARNING: the VGGT windows do not cover {missing} of {count} frames "
-                f"([{start_idx}, {end_idx})); those fall back to the identity camera. "
-                "Check camera.window/camera.overlap against this clip's frame count.",
+                f"WARNING: {stitched_path} is missing, so the poses come from the raw "
+                "VGGT windows. Raw windows have per-window world frames, so this pose "
+                "stream jumps at window boundaries; run Phase 4 (scripts/run_stitch.py) "
+                "first for a consistent world frame.",
                 file=sys.stderr,
             )
-        source = "vggt"
+            for path in candidates:
+                window = load_camera_window(path)
+                first, last = window.window.start, window.window.end
+                for frame in range(max(first, start_idx), min(last, end_idx)):
+                    local = frame - first
+                    slot = frame - start_idx
+                    rotations[slot] = window.rotation_c2w[local]
+                    translations[slot] = window.translation_c2w[local]
+                    coverage[slot] = True
+            if not coverage.all():
+                missing = int((~coverage).sum())
+                print(
+                    f"WARNING: the VGGT windows do not cover {missing} of {count} frames "
+                    f"([{start_idx}, {end_idx})); those fall back to the identity camera. "
+                    "Check camera.window/camera.overlap against this clip's frame count.",
+                    file=sys.stderr,
+                )
+            source = "vggt-raw-windows"
 
     # VGGT outputs metric depth, so no extra scale correction is needed.
     quaternions = _matrix_to_quaternion(rotations)
@@ -464,28 +502,56 @@ def _patch_crop_size(crop_size: int) -> None:
     TrackDatasetEval.__init__ = init_with_crop_size  # type: ignore[method-assign]
 
 
-def invalidate_stale_hand_cache(seq_folder: Path, focal: float | None) -> None:
-    """Drop HaWoR's cached hand parameters when the focal length changed.
-
-    ``hawor_motion_estimation`` short-circuits to
-    ``tracks_<start>_<end>/frame_chunks_all.npy`` whenever that file exists, and
-    it records the focal it used in ``est_focal.txt``. Re-running with a
-    *different* focal (or with one after a default-focal run) would therefore
-    silently reuse hand parameters reconstructed at the wrong depth - which is
-    exactly the 2.2x-too-deep HOT3D run. Removing the cache is loud, not silent.
-    """
+def invalidate_stale_hand_cache(
+    seq_folder: Path,
+    focal: float | None,
+    box_pad: float = 1.0,
+    boxes_fingerprint: str | None = None,
+) -> None:
+    """Drop HaWoR caches when focal, box padding, or tracked boxes change."""
     if focal is None:
         return
     marker = seq_folder / "est_focal.txt"
-    previous: float | None = None
+    marker_state: dict[str, object] = {"focal": float(focal), "box_pad": float(box_pad)}
+    if boxes_fingerprint is not None:
+        marker_state["boxes"] = str(boxes_fingerprint)
+
+    previous_state = None
+    force_invalidate = False
     if marker.is_file():
+        raw = marker.read_text()
         try:
-            previous = float(marker.read_text().strip())
-        except ValueError:
-            previous = None
-    marker.write_text(str(float(focal)))
-    if previous is None or abs(previous - float(focal)) < 1e-6:
+            loaded = json.loads(raw)
+        except json.JSONDecodeError:
+            try:
+                previous = float(raw.strip())
+            except ValueError:
+                print(f"invalid HaWoR cache marker {marker}; clearing cached tracks", file=sys.stderr)
+                force_invalidate = True
+            else:
+                previous_state = {"focal": previous, "box_pad": 1.0}
+        else:
+            if isinstance(loaded, dict) and "focal" in loaded:
+                try:
+                    previous_state = {
+                        "focal": float(loaded["focal"]),
+                        "box_pad": float(loaded.get("box_pad", 1.0)),
+                    }
+                    if "boxes" in loaded:
+                        previous_state["boxes"] = str(loaded["boxes"])
+                except (TypeError, ValueError):
+                    print(f"invalid HaWoR cache marker {marker}; clearing cached tracks", file=sys.stderr)
+                    force_invalidate = True
+            elif isinstance(loaded, (int, float)):
+                previous_state = {"focal": float(loaded), "box_pad": 1.0}
+            else:
+                print(f"invalid HaWoR cache marker {marker}; clearing cached tracks", file=sys.stderr)
+                force_invalidate = True
+
+    marker.write_text(json.dumps(marker_state))
+    if not force_invalidate and (previous_state is None or previous_state == marker_state):
         return
+
     removed = 0
     for cache in sorted(seq_folder.glob("tracks_*")):
         if cache.is_dir():
@@ -493,8 +559,8 @@ def invalidate_stale_hand_cache(seq_folder: Path, focal: float | None) -> None:
             removed += 1
     if removed:
         print(
-            f"focal changed {previous} -> {focal}: dropped {removed} cached HaWoR "
-            "track(s) so the hands are not reconstructed at the old depth",
+            f"reconstruction inputs changed: dropped {removed} cached HaWoR track(s) "
+            f"(old={previous_state}, new={marker_state})",
             file=sys.stderr,
         )
 
@@ -547,8 +613,14 @@ def to_camera_space(
         raise ValueError(
             f"t_w2c must be [{joints.shape[0]}, 3], got {translation.shape}"
         )
+    # X_cam = R_w2c @ X_world + t_w2c: the matrix is applied on the LEFT, so the
+    # einsum must contract the matrix's SECOND index with the point ("tij"),
+    # never the first ("tji" = R^T). The "tji" form mixes R_c2w into a w2c
+    # transform and measured 276 mm median error when recovering HOT3D
+    # camera-space hands from their world positions; "tij" recovers them at
+    # 0.0 mm. The old identity-rotation unit test could not see the difference.
     camera_space = (
-        np.einsum("tji,thnj->thni", rotation, joints) + translation[:, None, None, :]
+        np.einsum("tij,thnj->thni", rotation, joints) + translation[:, None, None, :]
     )
     hand_valid = np.asarray(pred_valid, dtype=np.float64).T > 0.5
     all_valid = hand_valid & np.asarray(valid, dtype=bool)
@@ -563,8 +635,13 @@ def to_camera_space(
             raise ValueError(
                 f"vertices must be [{joints.shape[0]}, 2, V, 3], got {verts.shape}"
             )
+        # same left-multiply rule as the joints above, but the vertex array's
+        # last axis is the 3-D coordinate: it must carry the *contracted*
+        # index j ("tvnj"), not the output index i. Getting this wrong - the
+        # old "tji,tvni->tvni" did - scales each axis by a matrix row/column
+        # sum instead of rotating (caught by the non-identity round-trip test).
         camera_vertices = (
-            np.einsum("tji,tvni->tvni", rotation, verts) + translation[:, None, None, :]
+            np.einsum("tij,tvnj->tvni", rotation, verts) + translation[:, None, None, :]
         )
         result["vertices_camera"] = np.where(
             all_valid[:, :, None, None], camera_vertices, np.nan
@@ -580,17 +657,17 @@ def run_model(args: argparse.Namespace) -> dict[str, np.ndarray]:
     out_dir = Path(args.out_dir).resolve()
     seq_folder = out_dir.parent / "hawor_seq"
     seq_folder.mkdir(parents=True, exist_ok=True)
-    # Drop stale caches BEFORE writing this run's model_tracks.npy below: the
-    # invalidation removes whole tracks_<start>_<end> directories, and ours is
-    # one of them. Called after the save it would delete the tracking this run
-    # just wrote and hawor_motion_estimation would then find no input at all.
-    invalidate_stale_hand_cache(seq_folder, args.focal)
-
-    # 1. our tracking becomes HaWoR's model_tracks.npy
+    # 1. our tracking becomes HaWoR's model_tracks.npy. Fingerprint detections
+    # before writing this run's tracks, so changed boxes cannot reuse stale
+    # model parameters from an earlier input.
     detection = load_npz(args.detection, required=("boxes", "confidence", "valid"))
     boxes = np.asarray(detection["boxes"], dtype=np.float64)
     confidence = np.asarray(detection["confidence"], dtype=np.float64)
     valid = np.asarray(detection["valid"], dtype=bool)
+    boxes_fingerprint = hashlib.sha1(np.ascontiguousarray(boxes).tobytes()).hexdigest()[:16]
+    invalidate_stale_hand_cache(
+        seq_folder, args.focal, boxes_fingerprint=boxes_fingerprint
+    )
     model_boxes, tracks = hawor_tracks_from_detection(
         boxes=boxes, confidence=confidence, valid=valid
     )

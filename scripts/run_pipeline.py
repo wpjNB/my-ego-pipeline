@@ -32,12 +32,15 @@ class Stage:
     requires_backend: str | None = None
 
 
+# The hand stage needs Phase 3's estimated focal and Phase 4's stitched
+# World-0 camera. HaWoR runs its infiller against one continuous camera path;
+# raw VGGT windows each have their own gauge and jump at window boundaries.
 STAGES: tuple[Stage, ...] = (
     Stage("phase0-preprocess", "run_preprocess.py"),
     Stage("phase1-detection", "run_detection.py", "WiLoR"),
-    Stage("phase2-hand", "run_hand.py", "HaWoR"),
     Stage("phase3-camera", "run_camera.py", "VGGT-Omega"),
     Stage("phase4-stitch", "run_stitch.py"),
+    Stage("phase2-hand", "run_hand.py", "HaWoR"),
     Stage("phase5-fusion", "run_fusion.py"),
     Stage("phase6-refine", "run_refine.py"),
 )

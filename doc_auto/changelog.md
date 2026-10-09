@@ -1,5 +1,49 @@
 # Changelog
 
+
+## 2026-10-09 13:30 (+08:00) - VGGT depth prior pilot for HaWoR (negative)
+
+The current HaWoR call already receives VGGT-derived focal and stitched camera
+poses, but its upstream inference API has no dense-depth argument. A wrapper
+pilot projected HaWoR MANO meshes through each VGGT window K, sampled VGGT depth
+on the front-most projected mesh, and adjusted per-frame root Z while preserving
+the wrist pixel. On P0001/P0002/P0003 the wrist 3D median worsened respectively
+from 14.8/22.9 to 54.4/47.2 mm, 28.6/13.3 to 161.7/311.1 mm, and 34.2/55.6 to
+182.6/171.2 mm (left/right). The depth map at GT wrist pixels had absolute
+median Z error 14.5/186.3/129.5 mm. This post-hoc adapter is not kept in the
+pipeline; a dense monocular depth map is not a dependable direct hand-root-Z
+measurement on these clips. Full experiment details are in `ablation.md`.
+
+## 2026-10-09 12:02 (+08:00) - re-anchor HOT3D MANO root rotations with the camera
+
+The LeRobot importer moved camera poses and wrist positions into World-0 before
+MANO forward kinematics, but left `mano_root_rot` in the original HOT3D world
+basis. The wrist therefore projected correctly while the fingers rotated around
+it in the wrong direction. The converter now left-multiplies each root rotation
+by the same anchor rotation; local finger rotations stay local.
+
+On sample_ep001 frame 175, corrected GT wrist positions are unchanged while the
+non-wrist joints move by a mean 17.5 cm (left) / 13.1 cm (right). The corrected
+GT re-import changes WiLoR Action-MPJPE from 199.34 to 91.74 mm and HaWoR from
+175.47 to 77.44 mm. Camera error remains 153.50 mm; the same frame's predicted
+camera differs from the reference by 137.9 mm and 4.66 degrees. The default `gt_vs_pred` view includes that drift; camera-space wrist medians
+remain 45.9/50.5 mm, so hand estimation also has residual error.
+Regression: `tests/test_hot3d_gt.py`. Full suite: 405 passed, 15 skipped in 80.39 s.
+
+
+## 2026-10-06 21:47 (+08:00) - keep HOT3D hand inference RGB-only
+
+Hand focal and EGO preview K come from VGGT's RGB-derived camera windows
+(canonical per-element median), with explicit `hand.focal` retained as an
+experiment override. Importer `image_camera` metadata and `ground_truth.npz`
+camera labels are not consumed by prediction code. On P0002_clip001971 the
+VGGT focal was 623.47 px; the RGB-only WiLoR output measured wrist reprojection
+medians of 84/28 px. A separate 608.54 px calibrated-focal run reached 70/19 px,
+but is an oracle calibration ablation and is not reported as an RGB-only score.
+The 0.5 box nudge remains labeled and preview-only. Sharded hand/camera joins
+record their mode to preserve command and provenance correctness. Full suite on
+the clean PR branch: 404 passed, 15 skipped (79.48 s).
+
 ## 2026-09-30 15:05 (+08:00) - combined EGO | WORLD viewer, after the Wuji reference
 
 Studied the reference ecosystem's own visualisation stack before building:

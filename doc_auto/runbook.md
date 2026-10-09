@@ -1,6 +1,6 @@
 # Runbook: how to run this project
 
-Last modified: 2026-09-24 22:30 (+08:00)
+Last modified: 2026-10-09 12:02 (+08:00)
 
 Two paths. Path A needs no weights and no GPU; Path B is the real pipeline.
 Start every session with the audit:
@@ -45,11 +45,19 @@ now-deleted debug PNG where the hands floated over the bowl - it is not a
 pipeline bug, and the test `test_world_to_camera_is_the_inverse_of_the_stored_pose`
 exists to keep it that way.
 
+LeRobot HOT3D references also need MANO root orientations transformed by the
+same World-0 anchor as wrist positions and camera poses. Re-import
+`ground_truth.npz` after changing that converter. The default world-frame `gt_vs_pred.mp4` includes camera-trajectory error.
+Interpret large wrist deltas alongside the camera-pose error before attributing
+them to the hand model.
+
 Interpretation rules: `01_detection.mp4` / `02_hawor.mp4` written with
 `backends.mode: mock` show the deterministic stand-in, not a model; and a
 21-joint stick figure on a *grasping* hand looks fanned out because the
 fingertips curl behind the palm - look at the wrist marker or the projected mesh
 instead.
+
+Hand focal resolution and EGO preview projection use the same canonical median K from VGGT's RGB-derived camera windows. Focal priority is the explicit `hand.focal` experiment override, then VGGT; importer `image_camera` metadata is excluded from focal resolution and EGO projection; ground-truth labels are loaded only by explicit evaluation/comparison paths such as `render_viewer.py --gt`. WiLoR previews may apply the configured, labeled 2D box nudge to rendered pixels only; saved 3D arrays remain unchanged.
 
 What `make demo` prints on this machine (CPU, mock):
 
@@ -65,9 +73,9 @@ Per-clip command sequence (equivalent to the demo):
 ```bash
 python scripts/run_preprocess.py    --config configs/mock.yaml --clip clip01 --data-root data/mock --video clip01.mp4
 python scripts/run_detection.py     --config configs/mock.yaml --clip clip01 --data-root data/mock
-python scripts/run_hand.py          --config configs/mock.yaml --clip clip01 --data-root data/mock
 python scripts/run_camera.py        --config configs/mock.yaml --clip clip01 --data-root data/mock
 python scripts/run_stitch.py        --config configs/mock.yaml --clip clip01 --data-root data/mock
+python scripts/run_hand.py          --config configs/mock.yaml --clip clip01 --data-root data/mock
 python scripts/run_fusion.py        --config configs/mock.yaml --clip clip01 --data-root data/mock
 python scripts/run_refine.py        --config configs/mock.yaml --clip clip01 --data-root data/mock
 python backends/mock_backend.py truth --out data/mock/clip01/trajectory/truth.npz --num-frames 300
@@ -112,17 +120,18 @@ $RUN scripts/run_detection.py --config $CFG --clip $CLIP
 #    -> detection/detection.npz (+ 01_detection.mp4)
 #    prints: coverage left=xx% right=xx%
 
-# 2 - HaWoR 16/8 (GPU env ego3d_hawor; ours tracking drives it)
-$RUN scripts/run_hand.py --config $CFG --clip $CLIP
-#    -> hand/hand_camera.npz, hand/windows/*.npz (+ 02_hawor.mp4)
-
-# 3 - VGGT-Omega windows (GPU env ego3d_vggt; one process for the whole clip)
+# 2 - VGGT-Omega windows (GPU env ego3d_vggt; one process for the whole clip)
 $RUN scripts/run_camera.py --config $CFG --clip $CLIP
 #    -> camera/windows/000000_000199.npz ...
 
-# 4 - depth-derived Sim(3) stitching + linear blending (CPU)
+# 3 - depth-derived Sim(3) camera stitching (CPU)
 $RUN scripts/run_stitch.py --config $CFG --clip $CLIP
 #    -> camera/stitched_camera.npz, stitched/sim3_transforms.npz
+
+# 4 - HaWoR 16/8 (GPU env ego3d_hawor; consumes the stitched camera path)
+#    focal priority: explicit hand.focal override -> VGGT RGB-derived canonical median
+$RUN scripts/run_hand.py --config $CFG --clip $CLIP
+#    -> hand/hand_camera.npz, hand/windows/*.npz (+ 02_hawor.mp4)
 #    prints per-pair: scale, rmse, inlier%, rotation
 
 # 5 - world fusion (CPU)

@@ -590,18 +590,14 @@ def test_hawor_absolutizes_paths_before_chdir(tmp_path: Path, monkeypatch: pytes
     assert True
 
 
-def test_resolve_focal_prefers_real_intrinsics_over_the_600px_default(
+def test_resolve_focal_uses_rgb_estimate_without_reading_camera_labels(
     tmp_path: Path,
 ) -> None:
-    """HaWoR's silent 600 px default is what put hands 2.2x too deep on HOT3D."""
-    import numpy as np
-
     from ego3d_action.io.artefacts import ClipLayout
 
     runner = load_script("run_hand_mod_focal", "scripts/run_hand.py")
     layout = ClipLayout(data_root=tmp_path, clip="clip")
     layout.ensure_dirs()
-    (layout.metadata_path).write_text('{"width": 512, "height": 512}', encoding="utf-8")
 
     class _Config:
         def __init__(self, values: dict[str, object]) -> None:
@@ -610,35 +606,59 @@ def test_resolve_focal_prefers_real_intrinsics_over_the_600px_default(
         def get(self, key: str, default: object = None) -> object:
             return self.values.get(key, default)
 
-    # 1. nothing available -> the caller must warn rather than guess
+    # Neither reference camera labels nor importer calibration metadata are
+    # prediction inputs in the RGB-only evaluation protocol.
+    gt_intrinsics = np.broadcast_to(
+        np.array([[221.14, 0.0, 255.8], [0.0, 221.14, 255.8], [0.0, 0.0, 1.0]]),
+        (3, 3, 3),
+    ).copy()
+    np.savez(layout.trajectory_dir / "ground_truth.npz", camera_K=gt_intrinsics)
+    image_camera = {
+        "model": "pinhole",
+        "undistorted": True,
+        "width": 512,
+        "height": 512,
+        "intrinsics": [[300.0, 0.0, 256.0], [0.0, 300.0, 256.0], [0.0, 0.0, 1.0]],
+    }
+    import json
+
+    layout.metadata_path.write_text(
+        json.dumps({"width": 512, "height": 512, "image_camera": image_camera}),
+        encoding="utf-8",
+    )
     focal, source = runner.resolve_focal(layout, _Config({}))
     assert focal is None and source == "unavailable"
 
-    # 2. a reference trajectory answers when the camera stage has not run yet
-    intrinsics = np.broadcast_to(
-        np.array([[221.14, 0.0, 255.8], [0.0, 221.14, 255.8], [0.0, 0.0, 1.0]]), (3, 3, 3)
-    ).copy()
-    np.savez(layout.trajectory_dir / "ground_truth.npz", camera_K=intrinsics)
+    # The canonical per-element median of VGGT's RGB-derived window K is the
+    # inference and rendering camera when no explicit override is configured.
+    for start, focal_px in ((0, 110.57), (4, 400.0)):
+        np.savez(
+            layout.window_path(start, start + 4),
+            intrinsics=np.broadcast_to(
+                np.array([[focal_px, 0.0, 127.9], [0.0, focal_px, 127.9], [0.0, 0.0, 1.0]]),
+                (4, 3, 3),
+            ).copy(),
+            depth=np.zeros((4, 256, 256), dtype=np.float32),
+        )
+    median_focal = (110.57 + 400.0) / 2 * 512 / 256
     focal, source = runner.resolve_focal(layout, _Config({}))
-    assert abs(focal - 221.14) < 1e-6 and source == "reference camera_K"
+    assert abs(focal - median_focal) < 0.05, (focal, median_focal)
+    overlay_K = runner._camera_intrinsics(layout)
+    assert abs(overlay_K[0, 0] - median_focal) < 0.05, overlay_K
 
-    # 3. Phase 3's windows win, rescaled from the depth grid to the frame size
-    np.savez(
-        layout.window_path(0, 4),
-        intrinsics=np.broadcast_to(
-            np.array([[110.57, 0.0, 127.9], [0.0, 110.57, 127.9], [0.0, 0.0, 1.0]]), (4, 3, 3)
-        ).copy(),
-        depth=np.zeros((4, 256, 256), dtype=np.float32),
+    viewer = load_script("render_viewer_mod_rgb_only", "scripts/render_viewer.py")
+    viewer_K = viewer._ego_intrinsics(
+        layout.visualization_dir, layout.frames_dir, (512, 512)
     )
-    focal, source = runner.resolve_focal(layout, _Config({}))
-    assert abs(focal - 221.14) < 0.05 and source == "Phase 3 camera windows"
+    assert abs(viewer_K[0, 0] - median_focal) < 0.05, viewer_K
 
-    # 4. an explicit config value wins over everything
-    focal, source = runner.resolve_focal(layout, _Config({"hand.focal": 300.0}))
-    assert focal == 300.0 and source == "config hand.focal"
+    focal, source = runner.resolve_focal(layout, _Config({"hand.focal": 240.0}))
+    assert focal == 240.0 and source == "config hand.focal"
 
 
 def test_hawor_drops_cached_tracks_when_the_focal_changes(tmp_path: Path) -> None:
+    import json
+
     """A cached track computed at the default 600 px must not survive a real focal."""
     runner = load_script("hawor_runner_mod11", "backends/hawor_runner.py")
     seq = tmp_path / "seq"
@@ -646,7 +666,7 @@ def test_hawor_drops_cached_tracks_when_the_focal_changes(tmp_path: Path) -> Non
     (seq / "tracks_0_450" / "frame_chunks_all.npy").write_bytes(b"stale")
 
     runner.invalidate_stale_hand_cache(seq, 221.14)
-    assert (seq / "est_focal.txt").read_text() == "221.14"
+    assert json.loads((seq / "est_focal.txt").read_text())["focal"] == 221.14
     assert (seq / "tracks_0_450").is_dir()  # nothing to compare against -> keep
 
     runner.invalidate_stale_hand_cache(seq, 600.0)
@@ -658,3 +678,132 @@ def test_hawor_drops_cached_tracks_when_the_focal_changes(tmp_path: Path) -> Non
     assert (seq / "tracks_1_2").is_dir()
     runner.invalidate_stale_hand_cache(seq, None)
     assert (seq / "tracks_1_2").is_dir()
+
+    # A box-padding change invalidates just like a focal change: the crops
+    # differ, so the cached reconstruction is stale even at the same focal.
+    (seq / "tracks_3_4").mkdir()
+    runner.invalidate_stale_hand_cache(seq, 600.0, box_pad=1.5)
+    assert not (seq / "tracks_3_4").exists()
+    assert json.loads((seq / "est_focal.txt").read_text())["box_pad"] == 1.5
+    runner.invalidate_stale_hand_cache(seq, 600.0, box_pad=1.5)
+    assert json.loads((seq / "est_focal.txt").read_text())["box_pad"] == 1.5
+
+    # A changed *detection* invalidates too: a different tracked-box
+    # fingerprint (e.g. a relaxed tracker threshold) produces different crops
+    # at the same focal and padding, so the cache is stale even though the
+    # focal and padding agree - the marker did not track this before.
+    (seq / "tracks_5_6").mkdir()
+    runner.invalidate_stale_hand_cache(seq, 600.0, box_pad=1.5, boxes_fingerprint="aa11")
+    assert not (seq / "tracks_5_6").exists()  # boxes changed -> drop
+    assert json.loads((seq / "est_focal.txt").read_text())["boxes"] == "aa11"
+    (seq / "tracks_7_8").mkdir()
+    runner.invalidate_stale_hand_cache(seq, 600.0, box_pad=1.5, boxes_fingerprint="aa11")
+    assert (seq / "tracks_7_8").is_dir()  # identical inputs -> keep
+
+
+def test_hawor_to_camera_space_applies_the_rotation_on_the_left() -> None:
+    """X_cam = R_w2c @ X_world + t_w2c: a non-identity rotation must be left-multiplied.
+
+    The original identity-rotation tests were transpose-invariant and let a
+    "tji" einsum (R^T) through for months; on real data that form measured
+    276 mm error recovering HOT3D camera-space hands from world positions.
+    """
+    import numpy as np
+    from scipy.spatial.transform import Rotation
+
+    runner = load_script("hawor_runner_mod13", "backends/hawor_runner.py")
+    total = 4
+    rng = np.random.RandomState(3)
+    R_c2w = Rotation.from_rotvec(rng.randn(total, 3) * 0.8).as_matrix()
+    t_c2w = rng.randn(total, 3) * 0.5
+    R_w2c = np.transpose(R_c2w, (0, 2, 1))
+    t_w2c = -np.einsum("tij,thj->thi", R_w2c, np.broadcast_to(t_c2w[:, None, :], (total, 2, 3)))[:, 0, :]
+
+    camera_truth = rng.randn(total, 2, 21, 3) * 0.1
+    world = np.einsum("tij,thnj->thni", R_c2w, camera_truth) + t_c2w[:, None, None, :]
+    verts_truth = rng.randn(total, 2, 12, 3) * 0.02
+    world_v = np.einsum("tij,tvnj->tvni", R_c2w, verts_truth) + t_c2w[:, None, None, :]
+
+    valid = np.ones((total, 2), dtype=bool)
+    pred_valid = np.ones((2, total))
+    confidence = np.full((total, 2), 0.9)
+    result = runner.to_camera_space(
+        R_w2c, t_w2c, world,
+        valid=valid, pred_valid=pred_valid, confidence=confidence,
+        vertices=world_v,
+    )
+    # both must round-trip back to the camera-space truth (a transposed
+    # rotation leaves ~2x the rotation error, i.e. centimetres here)
+    assert np.allclose(result["joints_camera"], camera_truth, atol=1e-9)
+    assert np.allclose(result["vertices_camera"], verts_truth, atol=1e-6)
+
+
+def test_hawor_slam_writer_prefers_the_stitched_camera(tmp_path: Path) -> None:
+    """The slam npz must carry Phase 4's World-0 frame, not per-window frames.
+
+    Each raw VGGT window is normalised to its own first frame, so adjacent
+    windows disagree by ~4 deg on shared frames; assembling them per frame
+    produced a pose stream that jumped at every window boundary and scrambled
+    the infiller's temporal model. The writer now prefers
+    `<camera-windows>/../stitched_camera.npz`.
+    """
+    import argparse
+
+    import numpy as np
+    from scipy.spatial.transform import Rotation
+
+    runner = load_script("hawor_runner_mod14", "backends/hawor_runner.py")
+    windows_dir = tmp_path / "camera" / "windows"
+    windows_dir.mkdir(parents=True)
+    seq = tmp_path / "seq"
+    seq.mkdir()
+
+    total = 6
+    # raw window with a big, arbitrary first-frame pose (as VGGT emits)
+    raw_R = np.broadcast_to(Rotation.from_rotvec([0.0, 0.0, np.pi / 2]).as_matrix(), (total, 3, 3)).copy()
+    raw_t = np.tile(np.array([9.0, 9.0, 9.0]), (total, 1))  # absurd on purpose
+    np.savez(windows_dir / "000000_000005.npz", start=np.array([0]), end=np.array([total]),
+             rotation_c2w=raw_R, translation_c2w=raw_t,
+             intrinsics=np.broadcast_to(np.eye(3), (total, 3, 3)).copy(),
+             depth=np.zeros((total, 2, 2), dtype=np.float32))
+    # stitched camera: consistent frame, identity first pose
+    stitched_R = np.broadcast_to(np.eye(3), (total, 3, 3)).copy()
+    stitched_t = np.zeros((total, 3))
+    np.savez(windows_dir.parent / "stitched_camera.npz",
+             rotation_c2w=stitched_R, translation_c2w=stitched_t,
+             valid=np.ones(total, dtype=bool), weight=np.ones(total))
+
+    args = argparse.Namespace(camera_windows=str(windows_dir), focal=None,
+                              start_idx=0, end_idx=total)
+    runner.write_camera_trajectory(args, seq, 0, total)
+    saved = np.load(seq / "SLAM" / f"hawor_slam_w_scale_0_{total}.npz")
+    traj = saved["traj"]
+    assert np.allclose(traj[:, :3], 0.0, atol=1e-6)  # stitched zeros, not the raw 9s
+    # quaternion of identity is (0,0,0,1) in the stored xyzw order
+    assert np.allclose(traj[0, 3:], [0.0, 0.0, 0.0, 1.0], atol=1e-6)
+
+
+def test_hawor_slam_writer_falls_back_to_raw_windows_with_a_warning(tmp_path: Path, capsys) -> None:
+    import argparse
+
+    import numpy as np
+    from scipy.spatial.transform import Rotation
+
+    runner = load_script("hawor_runner_mod15", "backends/hawor_runner.py")
+    windows_dir = tmp_path / "camera" / "windows"
+    windows_dir.mkdir(parents=True)
+    seq = tmp_path / "seq"
+    seq.mkdir()
+    total = 3
+    raw_R = np.broadcast_to(Rotation.from_rotvec([0.3, 0.0, 0.0]).as_matrix(), (total, 3, 3)).copy()
+    raw_t = np.tile(np.array([1.0, 2.0, 3.0]), (total, 1))
+    np.savez(windows_dir / "000000_000002.npz", start=np.array([0]), end=np.array([total]),
+             rotation_c2w=raw_R, translation_c2w=raw_t,
+             intrinsics=np.broadcast_to(np.eye(3), (total, 3, 3)).copy(),
+             depth=np.zeros((total, 2, 2), dtype=np.float32))
+    args = argparse.Namespace(camera_windows=str(windows_dir), focal=None,
+                              start_idx=0, end_idx=total)
+    runner.write_camera_trajectory(args, seq, 0, total)
+    saved = np.load(seq / "SLAM" / f"hawor_slam_w_scale_0_{total}.npz")
+    assert np.allclose(saved["traj"][0, :3], [1.0, 2.0, 3.0], atol=1e-6)
+    assert "stitched_camera.npz is missing" in capsys.readouterr().err

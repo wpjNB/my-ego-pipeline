@@ -70,6 +70,34 @@ def scale_intrinsics(intrinsics: Array, *, source_size: tuple[int, int], target_
     return np.einsum("ij,...jk->...ik", scale, k)
 
 
+def canonical_intrinsics(windows_dir, frame_size: tuple[int, int]) -> Array | None:
+    """Return one clip K: per-element median of VGGT window intrinsics.
+
+    Window estimates can scatter, so inference and preview fallbacks share the
+    same robust matrix. ``None`` means no camera windows have been produced.
+    """
+    from pathlib import Path as _Path
+
+    from ..io.serialization import load_npz
+
+    matrices = []
+    for path in sorted(_Path(windows_dir).glob("*.npz")):
+        data = load_npz(path, required=("intrinsics", "depth"))
+        depth = np.asarray(data["depth"])
+        source_size = (int(depth.shape[2]), int(depth.shape[1]))
+        matrices.append(
+            scale_intrinsics(
+                np.asarray(data["intrinsics"])[0],
+                source_size=source_size,
+                target_size=frame_size,
+            )
+        )
+    if not matrices:
+        return None
+    return np.median(np.stack(matrices), axis=0)
+
+
+
 def depth_to_world_points(
     depth: Array,
     intrinsics: Array,

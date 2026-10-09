@@ -63,12 +63,14 @@ logger = logging.getLogger(__name__)
 SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "scripts"
 
 #: Stage name -> script. ``shardable`` says the stage can be split by window.
+# HaWoR consumes both the camera-window focal and the globally stitched
+# camera trajectory, so insertion order is the per-clip dependency order.
 STAGE_SCRIPTS: dict[str, str] = {
     "preprocess": "run_preprocess.py",
     "detection": "run_detection.py",
-    "hand": "run_hand.py",
     "camera": "run_camera.py",
     "stitch": "run_stitch.py",
+    "hand": "run_hand.py",
     "fusion": "run_fusion.py",
     "refine": "run_refine.py",
 }
@@ -124,7 +126,11 @@ class ClipSpec:
 
 @dataclass
 class UnitSpec:
-    """One schedulable piece of work: a sharded stage of one clip."""
+    """One schedulable piece of work: a sharded stage of one clip.
+
+    ``mode`` distinguishes a full model run from an assembly-only join of
+    shard outputs, so provenance and commands cannot confuse the two.
+    """
 
     clip: str
     stage: str
@@ -132,6 +138,12 @@ class UnitSpec:
     num_windows: int = 1
     video: str | None = None
     num_frames: int | None = None
+    mode: str = "full"
+
+    def __post_init__(self) -> None:
+        allowed = {"full", "blend-only", "reuse"}
+        if self.mode not in allowed:
+            raise ValueError(f"unit mode must be one of {sorted(allowed)}, got {self.mode!r}")
 
     @property
     def name(self) -> str:
@@ -143,6 +155,7 @@ class UnitSpec:
             "stage": self.stage,
             "selection": self.selection.to_dict(),
             "num_windows": self.num_windows,
+            "mode": self.mode,
         }
 
 
@@ -349,6 +362,7 @@ def build_plan(
                             num_windows=total,
                             video=clip.video,
                             num_frames=num_frames,
+                            mode="blend-only" if stage == "hand" else "reuse",
                         )
                     )
             else:
@@ -401,7 +415,7 @@ def unit_command(
         command.append(unit.video)
     if unit.stage in SHARDABLE_STAGES and not unit.selection.is_whole:
         command += ["--shard", f"{unit.selection.shard.index}/{unit.selection.shard.count}"]
-    if unit.stage in ASSEMBLY_STAGES and unit.selection.is_whole:
+    if unit.stage in ASSEMBLY_STAGES and unit.selection.is_whole and unit.mode != "full":
         # Whole-clip join step emitted only for a sharded run: hand blends the
         # windows the shards wrote; camera reuses them, so a sharded camera run
         # never re-runs the model.
@@ -424,12 +438,9 @@ def unit_argument_signature(unit: UnitSpec) -> dict[str, Any]:
     step (``--blend-only``) writes a different set of artefacts than a full
     whole-clip run and must not be confused with it when skipping.
     """
-    mode = "full"
-    if unit.stage in ASSEMBLY_STAGES and unit.selection.is_whole:
-        mode = "blend-only" if unit.stage == "hand" else "reuse"
     return {
         "stage": unit.stage,
-        "mode": mode,
+        "mode": unit.mode,
         "num_windows": unit.num_windows,
         "num_frames": unit.num_frames,
     }
@@ -454,7 +465,14 @@ def input_hashes_for(
         # frame set (hashing every JPEG would cost more than detecting them).
         candidates.append(root / "metadata.json")
     elif unit.stage == "hand":
-        candidates.append(root / "detection" / "detection.npz")
+        candidates.extend(
+            (root / "metadata.json", root / "detection" / "detection.npz")
+        )
+        if unit.mode == "blend-only":
+            candidates.extend(sorted((root / "hand" / "windows").glob("*.npz")))
+        else:
+            candidates.extend(sorted((root / "camera" / "windows").glob("*.npz")))
+            candidates.append(root / "camera" / "stitched_camera.npz")
     elif unit.stage == "camera":
         candidates.append(root / "metadata.json")
     elif unit.stage == "stitch":

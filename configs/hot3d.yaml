@@ -73,6 +73,7 @@ evaluation:
 
 visualization:
   enabled: true
+  wilor_box_nudge: 0.5  # EGO preview only; metric 3D arrays stay raw
   fps: null
   draw_bbox: true
   draw_confidence: true

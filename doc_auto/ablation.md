@@ -1,6 +1,6 @@
 # Ablation table
 
-Last modified: 2026-09-29 23:45 (+08:00)
+Last modified: 2026-10-09 13:30 (+08:00)
 
 ## Mock backend (CPU, 300 frames, deterministic - plumbing validation only)
 
@@ -235,3 +235,30 @@ The 1.1 m error is expected and meaningless: the mock backend substitutes
 synthetic hands and a synthetic camera trajectory, so this run only proves that
 every stage, the artefact contract and the evaluation survive real-resolution,
 real-length, real-motion input.
+
+
+## VGGT dense-depth prior for HaWoR (P0001/P0002/P0003, 2026-10-09) - negative pilot
+
+HaWoR's upstream `model.inference` accepts RGB crops, boxes, `img_focal`,
+`img_center`, and handedness; it has no dense-depth input. This project already
+passes the VGGT-derived focal and stitched camera trajectory. To probe the
+remaining depth channel without changing HaWoR weights, a wrapper-side adapter
+was tested on the existing camera-space MANO outputs: project vertices using
+per-window VGGT K, take the front-most projected vertex per depth pixel, sample
+a 3x3 VGGT-depth median inside the tracked box, and translate each hand by the
+median depth residual while preserving the wrist pixel. Ground truth was used
+only after this adjustment for scoring.
+
+| Clip | Wrist 3D median L/R, baseline -> depth prior | All-joint frame-mean 3D median L/R, baseline -> depth prior | VGGT depth vs GT wrist Z, absolute median |
+| --- | --- | --- | ---: |
+| P0001_clip001849 | 14.8/22.9 -> 54.4/47.2 mm | 31.7/18.3 -> 52.0/40.1 mm | 14.5 mm |
+| P0002_clip001971 | 28.6/13.3 -> 161.7/311.1 mm | 54.0/21.9 -> 181.3/304.5 mm | 186.3 mm |
+| P0003_clip002059 | 34.2/55.6 -> 182.6/171.2 mm | 40.7/66.6 -> 181.4/162.0 mm | 129.5 mm |
+
+The per-frame root-Z shift was -93/-213 mm (L/R) on P0002 and about -179 mm
+for both hands on P0003. The wrist 2D error was held fixed by construction,
+but other joints expanded away from their image locations. Results are worse
+on all three clips; the dense VGGT maps are not a reliable direct hand-root-Z
+measurement at these pixels, even when their camera intrinsics are used. This
+was an output-level geometric pilot, not a retrained HaWoR depth-conditioned
+network, so it is not enabled in the pipeline.

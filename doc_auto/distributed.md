@@ -1,6 +1,6 @@
 # Distributed / heterogeneous batch execution (M1)
 
-Last modified: 2026-09-26 (+08:00)
+Last modified: 2026-10-06 16:07 (+08:00)
 
 The pipeline is already location-transparent where it matters: stages talk only
 through the on-disk artefact contract (`io/artefacts.py`) and the three model
@@ -33,6 +33,12 @@ python scripts/run_batch.py --manifest configs/clips.example.yaml \
 ## Which stages may be sliced
 
 The choice is a data-dependency decision, not a convenience one.
+
+Each clip runs detection, camera-window inference, camera stitching, hand
+reconstruction, fusion and refinement in that order. HaWoR consumes the
+estimated focal from Phase 3 and the stitched World-0 trajectory from Phase 4.
+Its hand windows can be parallelised after those clip-wide camera inputs exist;
+camera and hand phases are not peers.
 
 | Stage | Sliced by | Why |
 | --- | --- | --- |
@@ -72,6 +78,9 @@ params_hash = sha256(stage, parameters, input contents, shard selection)
 * the shard selection is part of the identity, so re-sharding cannot reuse a
   wrong result;
 * a stage never hashes its own output as an input;
+* HaWoR inference hashes detection, clip metadata, all camera windows and the
+  stitched camera; a blend-only unit hashes the input hand windows. Changed
+  camera poses therefore invalidate stale MANO output;
 * `.provenance/<unit>.done.json` records `{params_hash, outputs, inputs, host,
   git_revision, backend_mode, wall_time, platform}`;
 * `--skip-existing` reuses a unit only when the params hash matches **and** every
