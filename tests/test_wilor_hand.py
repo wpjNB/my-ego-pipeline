@@ -86,6 +86,22 @@ def test_pyrender_stub_install_is_idempotent() -> None:
     runner.install_pyrender_stub()  # second call must not raise or replace
 
 
+def test_wilor_preview_box_nudge_defaults_off_and_allows_override() -> None:
+    runner = load_script("wilor_hand_entry_nudge_test", "scripts/run_hand_wilor.py")
+
+    class Config:
+        def __init__(self, values):
+            self.values = values
+
+        def get(self, key, default=None):
+            return self.values.get(key, default)
+
+    assert runner.resolve_wilor_box_nudge(Config({})) == 0.0
+    assert runner.resolve_wilor_box_nudge(
+        Config({"visualization.wilor_box_nudge": 0.5})
+    ) == 0.5
+
+
 def test_helpers_locate_checkout_files(tmp_path: Path) -> None:
     runner = load_script("wilor_hand_runner_t5", "backends/wilor_hand_runner.py")
     assert runner.find_checkpoint(tmp_path) is None

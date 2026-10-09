@@ -48,6 +48,13 @@ from run_hand import _camera_intrinsics, _mano_faces, resolve_focal  # noqa: E40
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_WILOR_BOX_NUDGE = 0.0
+
+
+def resolve_wilor_box_nudge(config) -> float:
+    """Use raw MANO projection unless a clip explicitly opts into a box correction."""
+    return float(config.get("visualization.wilor_box_nudge", DEFAULT_WILOR_BOX_NUDGE))
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = base_parser(__doc__ or "WiLoR hand reconstruction")
@@ -75,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
 
         detection = load_detection(layout)
         num_frames = int(np.asarray(detection["valid"]).shape[0])
-        box_nudge = float(context.config.get("visualization.wilor_box_nudge", 0.5))
+        box_nudge = resolve_wilor_box_nudge(context.config)
         focal, focal_source = resolve_focal(layout, context.config)
         if focal is None:
             # Unlike HaWoR (which silently falls back to 600 px), WiLoR *cannot*

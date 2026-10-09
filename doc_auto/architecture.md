@@ -1,6 +1,6 @@
 # Architecture
 
-Last modified: 2026-10-06 18:48 (+08:00)
+Last modified: 2026-10-09 17:56 (+08:00)
 
 ## Dataset bridge (LeRobot v3 / HOT3D)
 
@@ -96,8 +96,7 @@ A validated, undistorted input-frame calibration in metadata.image_camera
 is used both to resolve the hand model's focal and to project camera-space
 hands onto decoded RGB pixels. This keeps the 3D reconstruction and 2D preview
 on the same camera; it never reads ground-truth labels. Legacy clips without
-frame calibration fall back to the canonical Phase-3 VGGT estimate. The optional
-WiLoR box nudge stays display-only and never changes prediction arrays.
+frame calibration fall back to the canonical Phase-3 VGGT estimate. WiLoR's detector-box nudge is a display-only, per-clip override and is disabled by default. On sample_ep007 frame 0, the old 0.5 setting moved the left/right mesh centroids outward by about 12/11 px and downward by about 10/6 px. It compensates for detector boxes rather than camera geometry, so enable it only when an image-space check for that clip shows that it helps.
 
 | Phase | Module | Artefact | Notes |
 | --- | --- | --- | --- |
