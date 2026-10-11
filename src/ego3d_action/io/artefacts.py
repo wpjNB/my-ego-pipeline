@@ -120,6 +120,10 @@ class ClipLayout:
         return self.trajectory_dir / "metadata.json"
 
     @property
+    def processed_hand_path(self) -> Path:
+        return self.trajectory_dir / "hand_camera_processed.npz"
+
+    @property
     def world_joints_raw_path(self) -> Path:
         return self.trajectory_dir / "world_joints_raw.npy"
 
