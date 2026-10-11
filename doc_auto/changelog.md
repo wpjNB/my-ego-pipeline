@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-10-11 20:53 (+08:00) - end-to-end trajectory cleaning and processed MANO preview
+
+Phase 6 now runs P1 outlier screening, P2 bounded interpolation, and P3
+temporal filtering in one scripts/run_refine.py invocation. P1 combines
+per-frame translation/rotation steps, bounded out-and-back block rejection,
+and Hampel/MAD isolated-spike rejection for camera and hand tracks. P2 linearly
+fills short position gaps and SLERPs camera/MANO rotations. P3 filters camera
+translation, smooths camera/MANO rotations geodesically, and applies hand
+UKF + RTS. Rejected/interpolated masks and stage counts are saved with the
+trajectory metadata.
+
+When HaWoR mesh vertices exist, the stage writes
+trajectory/hand_camera_processed.npz. The --processed viewer mode uses it with
+the cleaned world trajectory; GT stays hidden unless --gt is set. The mesh
+keeps HaWoR's finger articulation while short gaps, root rotation, and wrist
+placement follow the cleaned trajectory. This is a rigid root update and wrist
+re-anchoring, not a new nonlinear MANO fit.
+
+Executed on P0001_clip001849 (150 frames): 0 outlier frames, 11 hand frames
+interpolated, and 23 hand frames still missing. Generated a five-second H.264
+MANO EGO|WORLD preview. This verifies pipeline execution and visualization,
+not an accuracy improvement. Full suite: 464 passed, 1 skipped in 107.88 s;
+the only skip is the GPU-visible environment probe.
+
+
 ## 2026-10-06 18:11 (+08:00) - render with the input-frame camera calibration
 
 The P0002 official frames were already undistorted to a pinhole camera with

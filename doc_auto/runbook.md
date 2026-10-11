@@ -1,6 +1,6 @@
 # Runbook: how to run this project
 
-Last modified: 2026-10-06 18:48 (+08:00)
+Last modified: 2026-10-11 20:53 (+08:00)
 
 Two paths. Path A needs no weights and no GPU; Path B is the real pipeline.
 Start every session with the audit:
@@ -132,10 +132,13 @@ $RUN scripts/run_hand.py --config $CFG --clip $CLIP
 $RUN scripts/run_fusion.py --config $CFG --clip $CLIP
 #    -> trajectory/trajectory_raw.npz
 
-# 6 - post-processing (CPU)
+# 6 - P1 outlier rejection -> P2 gap fill -> P3 temporal filtering (CPU)
 $RUN scripts/run_refine.py --config $CFG --clip $CLIP
 #    -> trajectory/trajectory.npz + trajectory/metadata.json
+#    -> trajectory/hand_camera_processed.npz when HaWoR vertices exist
 ```
+
+Render the cleaned MANO mesh with the filtered world trajectory by running `python scripts/render_viewer.py --config $CFG --clip $CLIP --processed`. It writes visualization/viewer_cleaned.mp4 and leaves GT hidden unless the separate --gt flag is supplied.
 
 Or `scripts/run_pipeline.py --config $CFG --clip $CLIP --video /data/$CLIP.mp4`
 for the whole chain in one command.

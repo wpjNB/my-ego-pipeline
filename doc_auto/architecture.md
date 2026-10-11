@@ -1,6 +1,6 @@
 # Architecture
 
-Last modified: 2026-10-09 17:56 (+08:00)
+Last modified: 2026-10-11 20:53 (+08:00)
 
 ## Dataset bridge (LeRobot v3 / HOT3D)
 
@@ -106,8 +106,33 @@ frame calibration fall back to the canonical Phase-3 VGGT estimate. WiLoR's dete
 | 3 camera | `camera/vggt_omega.py`, `camera/window.py` | `camera/windows/*.npz` | 416 px / 200 frames / 40 overlap |
 | 4 stitch | `camera/depth.py`, `camera/stitch.py`, `geometry/*` | `camera/stitched_camera.npz`, `stitched/sim3_transforms.npz` | depth-derived Sim(3) + linear blending |
 | 5 fusion | `fusion/trajectory.py` | `trajectory/trajectory_raw.npz` | `p_w = R_c2w p_c + t_c2w` |
-| 6 refine | `refinement/*` | `trajectory/trajectory.npz` | short-gap interpolation (P2), camera filter, bone scale, wrist depth, UKF + RTS smoothing (P3) |
+| 6 refine | `refinement/*`, `scripts/run_refine.py` | `trajectory/trajectory.npz`, optional `trajectory/hand_camera_processed.npz` | P1 outlier rejection -> P2 bounded linear/SLERP gap fill -> P3 camera, SO(3), and hand UKF/RTS filtering; bone scale and wrist-depth correction |
 | 7 evaluate | `evaluation/*` | report | Action-MPJPE / Coverage / FPS |
+
+
+### Phase 6 cleaning pipeline (P1-P3)
+
+scripts/run_refine.py is the single entry point for the ordered cleanup
+pipeline. P1 measures hand-wrist and camera translation/rotation steps per
+frame. It rejects short out-and-back blocks and isolated Hampel/MAD spikes;
+rejected samples become invalid anchors and are recorded in hand_outlier and
+camera_outlier masks and metadata. Defaults are 0.15 m/frame and 45
+degrees/frame, with 0.15 m / 30 degree recovery limits and a 15-frame maximum.
+
+P2 fills only interior gaps up to 12 frames: positions use linear
+interpolation; camera and MANO root rotations use shortest-path SLERP. Longer
+and boundary gaps stay missing. P3 filters camera translation, smooths camera
+and MANO root rotations geodesically, and runs hand UKF + RTS. Stage settings,
+rejected masks, and interpolation masks are saved with the trajectory. The
+pipeline reads predictions and calibration, never ground-truth files.
+Outlier rejection may lower coverage; interpolation marks generated frames.
+
+When HaWoR mesh vertices exist, Phase 6 also writes
+trajectory/hand_camera_processed.npz: short mesh gaps are interpolated, the
+root rotation is updated, and vertices are re-anchored at the filtered wrist.
+Finger articulation remains from HaWoR rather than a new nonlinear MANO fit.
+Run scripts/render_viewer.py --processed to render that mesh with the cleaned
+world trajectory; GT appears only when --gt is supplied.
 
 ## Batch execution (offline)
 

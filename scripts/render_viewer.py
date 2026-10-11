@@ -71,7 +71,8 @@ def _ego_intrinsics(viz_dir: Path, frames_dir: Path, size: tuple[int, int]):
 
 
 def _ego_panel(cv2, frame_path: Path, vertices, joints, intrinsics, valid, faces, *,
-               boxes, box_nudge: float, target_total: int) -> np.ndarray:
+               boxes, box_nudge: float, target_total: int,
+               processed: bool = False) -> np.ndarray:
     """RGB frame + MANO mesh + skeleton + validity badges, resized to panel height."""
     frame = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
     if frame is None:
@@ -86,7 +87,12 @@ def _ego_panel(cv2, frame_path: Path, vertices, joints, intrinsics, valid, faces
     canvas = draw_hand_mesh(frame, draw_vertices, faces, intrinsics, hand_valid)
     canvas = draw_hand_projection(canvas, draw_joints, intrinsics, hand_valid, colour=SKELETON_COLOUR)
     badges = f"left: {'yes' if hand_valid[0] else 'NO '}   right: {'yes' if hand_valid[1] else 'NO '}"
-    fit_label = "   2D box nudge (preview only)" if box_nudge > 0.0 else ""
+    preview_labels = []
+    if box_nudge > 0.0:
+        preview_labels.append("2D box nudge (preview only)")
+    if processed:
+        preview_labels.append("P1/P2/P3 cleaned")
+    fit_label = "   " + ", ".join(preview_labels) if preview_labels else ""
     strip = np.full((HEADER_HEIGHT, canvas.shape[1], 3), EGO_HEADER_BG, dtype=np.uint8)
     cv2.putText(strip, f"EGO VIEW - MANO mesh + skeleton{fit_label}   {badges}", (8, 18),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (240, 240, 240), 1, cv2.LINE_AA)
@@ -99,6 +105,8 @@ def _ego_panel(cv2, frame_path: Path, vertices, joints, intrinsics, valid, faces
 def main(argv: list[str] | None = None) -> int:
     parser = base_parser(__doc__ or "EGO | WORLD combined viewer")
     parser.add_argument("--gt", action="store_true", help="overlay the reference trails (world panel)")
+    parser.add_argument("--processed", action="store_true", help="render Phase-6 cleaned MANO mesh data")
+    parser.add_argument("--output", default=None, help="video output path")
     parser.add_argument("--video-stride", type=int, default=2, help="every Nth frame in the video")
     parser.add_argument("--fps", type=float, default=None, help="output fps (default: 30/stride)")
     args = parser.parse_args(argv)
@@ -109,7 +117,10 @@ def main(argv: list[str] | None = None) -> int:
             return fail("--clip is required")
         cv2 = require_cv2()
         viz = layout.visualization_dir
-        hand = load_npz(layout.hand_path, required=("vertices_camera", "joints_camera", "valid"))
+        hand_path = layout.processed_hand_path if args.processed else layout.hand_path
+        if args.processed and not hand_path.is_file():
+            return fail(f"processed MANO preview is missing; run scripts/run_refine.py first: {hand_path}")
+        hand = load_npz(hand_path, required=("vertices_camera", "joints_camera", "valid"))
         vertices = np.asarray(hand["vertices_camera"], dtype=np.float64)
         joints = np.asarray(hand["joints_camera"], dtype=np.float64)
         hand_valid = np.asarray(hand["valid"], dtype=bool)
@@ -150,13 +161,16 @@ def main(argv: list[str] | None = None) -> int:
         x_lim, y_lim, z_lim = world._limits(tracks, None)
         span = (x_lim[1] - x_lim[0], y_lim[1] - y_lim[0], z_lim[1] - z_lim[0])
         panel_w, panel_h = 760, 570
-        out_path = viz / "viewer.mp4"
+        default_name = "viewer_cleaned.mp4" if args.processed else "viewer.mp4"
+        out_path = Path(args.output) if args.output else viz / default_name
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         writer = None
         for t in range(1, total + 1, max(1, args.video_stride)):
             left = _ego_panel(
                 cv2, frames[t - 1], vertices[t - 1], joints[t - 1], intrinsics,
                 hand_valid[t - 1], faces, boxes=detection["boxes"][t - 1],
                 box_nudge=box_nudge, target_total=panel_h + HEADER_HEIGHT,
+                processed=args.processed,
             )
             figure = plt.figure(figsize=(panel_w / 100, panel_h / 100), dpi=100,
                                 facecolor=world.BACKGROUND)

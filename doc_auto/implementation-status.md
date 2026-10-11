@@ -1,13 +1,11 @@
 # Implementation status
 
-Last modified: 2026-10-06 18:48 (+08:00)
+Last modified: 2026-10-11 20:53 (+08:00)
 
-Test suite: **440 passed**, 1 skipped in 90.35 s on the CPU-only interpreter
-(`conda run -n ego3d_base python -m pytest -q`). 119 of those are newer than
-the M0 suite: the sharding/provenance/executor/batch modules, the sharded E2E
-comparison, and the HaWoR focal-resolution + cache-invalidation tests. The
-newest additions are the post-processing stages P2 (`tests/test_gap_fill.py`)
-and P3 (`tests/test_ukf_smooth.py`).
+Latest full suite: **464 passed, 1 skipped** in 107.88 s on aius1
+(conda run -n ego3d_base pytest -q). The only skip is the existing GPU-visible
+environment probe. Fourteen P1-P3 outlier, interpolation, rotation, and
+processed-MANO preview tests were added; the real sample run also completed.
 
 HaWoR now runs after Phase 4 stitches the VGGT camera windows. Batch provenance hashes those camera inputs, so a changed camera invalidates stale hand output. Hand focal priority is explicit hand.focal, then validated undistorted input-frame image_camera metadata, then the canonical VGGT estimate; the same calibrated input K drives overlay projection. Ground-truth camera labels remain evaluation-only. On P0002_clip001971 (1408x1408), using the 608.54 px input focal rather than the 623.47 px VGGT fallback reduced WiLoR median wrist reprojection error from 84/28 px to 70/19 px; 3D wrist error remained 49/36 mm, so model root/pose prediction is still the larger residual. WiLoR EGO previews may additionally apply the configured display-only box nudge without changing metric arrays.
 
@@ -45,6 +43,7 @@ serves every clip's videos and stills in one page.
 | Depth correspondences + stitching | `camera/depth.py`, `camera/stitch.py` | `tests/test_stitch.py` |
 | World fusion + trajectory contract | `fusion/trajectory.py`, `io/serialization.py` | `tests/test_fusion.py`, `tests/test_serialization.py` |
 | Camera filter / bone scale / wrist depth | `refinement/*` | `tests/test_camera_filter.py`, `tests/test_bone_scale.py`, `tests/test_wrist_depth.py` |
+| P1-P3 cleaning pipeline | `refinement/motion_outlier.py`, `temporal_tracks.py`, `mano_preview.py`, `scripts/run_refine.py` | `tests/test_motion_outlier.py`, `test_temporal_tracks.py`, `test_mano_preview.py` |
 | Short-gap interpolation (P2) | `refinement/gap_fill.py` | `tests/test_gap_fill.py` |
 | UKF + RTS smoothing (P3) | `refinement/ukf_smooth.py` | `tests/test_ukf_smooth.py` |
 | Action-MPJPE / coverage / report | `evaluation/*` | `tests/test_action_mpjpe.py` |
@@ -96,12 +95,11 @@ whose reference profile stays in `configs/hot3d.yaml`).
    moved ep000 to 34.9 % / 92.2 % and 161.6 mm. Left-hand recall on this
    lens remains the cap on every aggregate number; the honest option left is
    a detector better calibrated for this resolution, or selecting episodes.
-2. **P1 (outlier screening) is the one reference post-processing stage still
-   missing.** The reference's `block_outlier.block_spike` rejects temporal and
-   motion outliers before interpolation; here `hand_valid` carries that
-   information instead. A MAD/block screen is only worth adding together with
-   a coverage-policy decision (drop vs down-weight), since dropping frames
-   lowers the coverage number.
+2. **P1-P3 cleanup is one Phase-6 pipeline.** P1 records rejected camera
+   and hand samples; P2 fills and marks short interior gaps; P3 filters camera
+   translation and SO(3) rotations and smooths hand joints with UKF + RTS.
+   On P0001_clip001849 it rejected 0 outliers, interpolated 11 hand frames,
+   and left 23 frames missing. This verifies execution, not an accuracy gain.
 3. **Full ablation table.** The focal, detection, stitch, finger-depth and
    P2/P3 rows are filled (`doc_auto/ablation.md`); the upstream rows (HaWoR
    without VGGT, +40 overlap, HaWoR-original pipeline) still need dedicated
