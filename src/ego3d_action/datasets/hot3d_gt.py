@@ -154,9 +154,12 @@ def convert_episode(
         joints[:, hand, 0, :] = np.einsum(
             "ij,tj->ti", anchor_rotation, wrist_world - anchor_translation
         )
-        root_rot[:, hand] = _stack_rotation_matrices(
+        root_rotation_hot3d = _stack_rotation_matrices(
             episode.column(f"{side}_orient_world"), count=1, name=f"{side}_orient_world"
         )[:, 0]
+        # The wrist position and camera poses above are in World-0. Root orientation
+        # is also world-space, so apply the same anchor rotation before MANO FK.
+        root_rot[:, hand] = np.einsum("ij,tjk->tik", anchor_rotation, root_rotation_hot3d)
         hand_pose[:, hand] = _stack_rotation_matrices(
             episode.column(f"{side}_hand_pose"), count=15, name=f"{side}_hand_pose"
         )
