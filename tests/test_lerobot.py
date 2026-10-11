@@ -88,6 +88,21 @@ def test_reference_is_re_anchored_to_world_zero(dataset: LeRobotDataset) -> None
     assert anchor_translation.shape == (3,)
 
 
+def test_mano_root_orientations_are_reanchored_to_world_zero(dataset: LeRobotDataset) -> None:
+    raw = dataset.load_episode(0)
+    converted = convert_episode(dataset, 0)
+    # Metadata records World-0 -> HOT3D; the importer applies its transpose.
+    hot3d_from_world0 = np.asarray(
+        converted.metadata["hot3d_world_anchor_rotation"], dtype=np.float64
+    )
+    world0_from_hot3d = hot3d_from_world0.T
+    for hand, side in enumerate(("left", "right")):
+        root_hot3d = np.asarray(raw.column(f"{side}_orient_world"), dtype=np.float64)
+        root_hot3d = root_hot3d.reshape(raw.length, 3, 3)
+        expected = np.einsum("ij,tjk->tik", world0_from_hot3d, root_hot3d)
+        assert np.allclose(converted.arrays["mano_root_rot"][:, hand], expected, atol=1e-7)
+
+
 def test_only_the_wrist_carries_a_reference_position(dataset: LeRobotDataset) -> None:
     episode = convert_episode(dataset, 0)
     world = episode.arrays["hand_xyz_world"]
